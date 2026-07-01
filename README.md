@@ -1,1 +1,1 @@
-# multimodalAI_epilepsy
+# Multimodal Epilepsy Localization (EEG, MRI, and multimodal fusion)

@@ -1,0 +1,223 @@
+{
+  "source": {
+    "citation": "Koessler L. et al. (2009). Automated cortical projection of EEG sensors: Anatomical correlation via the international 10–10 system. NeuroImage 46(1):64–72.",
+    "doi": "10.1016/j.neuroimage.2009.02.006",
+    "table": "Table 1 – Anatomical locations of international 10–10 cortical projections",
+    "coordinate_system_table": "Talairach",
+    "conversion_to_mni": "Applied the standard Brett et al. (2002) / mni2tal affine (piecewise) inverse (tal2mni). For z>=0 used matrix [[0.9688,0.0460],[-0.0485,0.9189]]; for z<0 used [[0.9688,0.0420],[-0.0485,0.8390]]; x scaled by 0.99. SDs in MNI are an independence-based estimate via the same linear transform.",
+    "subjects": 17
+  },
+  "data": {
+    "FP1": {
+      "talairach": { "x": -21.2, "y": 66.9, "z": 12.1 },
+      "talairach_sd": { "x": 4.7, "y": 3.8, "z": 6.6 },
+      "mni": { "x": -21.4, "y": 68.3, "z": 16.8 },
+      "mni_sd_estimate": { "x": 4.7, "y": 3.9, "z": 7.2 }
+    },
+    "FPz": {
+      "talairach": { "x": 1.4, "y": 65.1, "z": 11.3 },
+      "talairach_sd": { "x": 2.9, "y": 5.6, "z": 6.8 },
+      "mni": { "x": 1.4, "y": 66.4, "z": 15.8 },
+      "mni_sd_estimate": { "x": 2.9, "y": 5.8, "z": 7.4 }
+    },
+    "FP2": {
+      "talairach": { "x": 24.3, "y": 66.3, "z": 12.5 },
+      "talairach_sd": { "x": 3.2, "y": 3.5, "z": 6.1 },
+      "mni": { "x": 24.5, "y": 67.6, "z": 17.2 },
+      "mni_sd_estimate": { "x": 3.2, "y": 3.6, "z": 6.6 }
+    },
+    "AF7": {
+      "talairach": { "x": -41.7, "y": 52.8, "z": 11.3 },
+      "talairach_sd": { "x": 4.5, "y": 5.4, "z": 6.8 },
+      "mni": { "x": -42.1, "y": 54.4, "z": 15.2 },
+      "mni_sd_estimate": { "x": 4.5, "y": 5.6, "z": 7.4 }
+    },
+    "AF3": {
+      "talairach": { "x": -32.7, "y": 48.4, "z": 32.8 },
+      "talairach_sd": { "x": 4.9, "y": 6.7, "z": 6.4 },
+      "mni": { "x": -33.0, "y": 51.5, "z": 38.2 },
+      "mni_sd_estimate": { "x": 4.9, "y": 6.9, "z": 7.1 }
+    },
+    "AFz": {
+      "talairach": { "x": 1.8, "y": 54.8, "z": 37.9 },
+      "talairach_sd": { "x": 3.8, "y": 7.3, "z": 8.6 },
+      "mni": { "x": 1.8, "y": 59.0, "z": 44.1 },
+      "mni_sd_estimate": { "x": 3.8, "y": 7.6, "z": 9.4 }
+    },
+    "AF4": {
+      "talairach": { "x": 35.1, "y": 50.1, "z": 31.1 },
+      "talairach_sd": { "x": 3.9, "y": 5.3, "z": 7.5 },
+      "mni": { "x": 35.5, "y": 53.0, "z": 36.6 },
+      "mni_sd_estimate": { "x": 3.9, "y": 5.5, "z": 8.2 }
+    },
+    "AF8": {
+      "talairach": { "x": 43.9, "y": 52.7, "z": 9.3 },
+      "talairach_sd": { "x": 3.3, "y": 5.0, "z": 6.5 },
+      "mni": { "x": 44.3, "y": 53.8, "z": 13.6 },
+      "mni_sd_estimate": { "x": 3.3, "y": 5.2, "z": 7.1 }
+    },
+    "F7": {
+      "talairach": { "x": -52.1, "y": 28.6, "z": 3.8 },
+      "talairach_sd": { "x": 3.0, "y": 6.4, "z": 5.6 },
+      "mni": { "x": -52.6, "y": 29.2, "z": 5.7 },
+      "mni_sd_estimate": { "x": 3.0, "y": 6.6, "z": 6.1 }
+    },
+    "F5": {
+      "talairach": { "x": -51.4, "y": 26.7, "z": 24.7 },
+      "talairach_sd": { "x": 3.8, "y": 7.2, "z": 9.4 },
+      "mni": { "x": -51.9, "y": 28.5, "z": 29.8 },
+      "mni_sd_estimate": { "x": 3.8, "y": 7.4, "z": 10.3 }
+    },
+    "F3": {
+      "talairach": { "x": -39.7, "y": 25.3, "z": 44.7 },
+      "talairach_sd": { "x": 5.0, "y": 7.5, "z": 7.9 },
+      "mni": { "x": -40.1, "y": 29.0, "z": 50.9 },
+      "mni_sd_estimate": { "x": 5.1, "y": 7.7, "z": 8.7 }
+    },
+    "F1": {
+      "talairach": { "x": -22.1, "y": 26.8, "z": 54.9 },
+      "talairach_sd": { "x": 6.1, "y": 7.2, "z": 6.7 },
+      "mni": { "x": -22.3, "y": 30.6, "z": 61.0 },
+      "mni_sd_estimate": { "x": 6.2, "y": 7.4, "z": 7.4 }
+    },
+    "Fz": {
+      "talairach": { "x": 0.0, "y": 26.8, "z": 60.6 },
+      "talairach_sd": { "x": 6.4, "y": 7.9, "z": 6.5 },
+      "mni": { "x": 0.0, "y": 31.1, "z": 66.9 },
+      "mni_sd_estimate": { "x": 6.5, "y": 8.1, "z": 7.2 }
+    },
+    "F2": {
+      "talairach": { "x": 23.6, "y": 28.2, "z": 55.6 },
+      "talairach_sd": { "x": 5.0, "y": 7.4, "z": 6.2 },
+      "mni": { "x": 23.8, "y": 32.0, "z": 61.9 },
+      "mni_sd_estimate": { "x": 5.1, "y": 7.6, "z": 6.8 }
+    },
+    "F4": {
+      "talairach": { "x": 41.9, "y": 27.5, "z": 43.9 },
+      "talairach_sd": { "x": 4.8, "y": 7.3, "z": 7.6 },
+      "mni": { "x": 42.3, "y": 31.1, "z": 50.1 },
+      "mni_sd_estimate": { "x": 4.8, "y": 7.5, "z": 8.4 }
+    },
+    "F6": {
+      "talairach": { "x": 52.9, "y": 28.7, "z": 25.2 },
+      "talairach_sd": { "x": 3.6, "y": 7.2, "z": 7.4 },
+      "mni": { "x": 53.4, "y": 30.5, "z": 30.3 },
+      "mni_sd_estimate": { "x": 3.6, "y": 7.4, "z": 8.1 }
+    },
+    "F8": {
+      "talairach": { "x": 53.2, "y": 28.4, "z": 3.1 },
+      "talairach_sd": { "x": 2.8, "y": 6.3, "z": 6.9 },
+      "mni": { "x": 53.7, "y": 29.4, "z": 4.9 },
+      "mni_sd_estimate": { "x": 2.8, "y": 6.5, "z": 7.5 }
+    },
+
+    "FT9": {
+      "talairach": { "x": -53.8, "y": -2.1, "z": -29.1 },
+      "talairach_sd": { "x": 3.3, "y": 6.0, "z": 6.3 },
+      "mni": { "x": -54.3, "y": -0.6, "z": -34.7 },
+      "mni_sd_estimate": { "x": 3.3, "y": 6.2, "z": 7.5 }
+    },
+    "FT7": {
+      "talairach": { "x": -59.2, "y": 3.4, "z": -2.1 },
+      "talairach_sd": { "x": 3.1, "y": 5.6, "z": 7.5 },
+      "mni": { "x": -59.8, "y": 3.6, "z": -2.9 },
+      "mni_sd_estimate": { "x": 3.1, "y": 5.8, "z": 8.9 }
+    },
+    "FC5": {
+      "talairach": { "x": -59.1, "y": 3.0, "z": 26.1 },
+      "talairach_sd": { "x": 3.7, "y": 6.1, "z": 5.8 },
+      "mni": { "x": -59.7, "y": 3.8, "z": 28.8 },
+      "mni_sd_estimate": { "x": 3.7, "y": 6.3, "z": 6.4 }
+    },
+    "FC3": {
+      "talairach": { "x": -45.5, "y": 2.4, "z": 51.3 },
+      "talairach_sd": { "x": 5.5, "y": 8.3, "z": 6.2 },
+      "mni": { "x": -46.0, "y": 2.3, "z": 55.6 },
+      "mni_sd_estimate": { "x": 5.6, "y": 8.6, "z": 6.9 }
+    },
+    "FC1": {
+      "talairach": { "x": -24.7, "y": 0.3, "z": 66.4 },
+      "talairach_sd": { "x": 5.7, "y": 8.5, "z": 4.6 },
+      "mni": { "x": -24.9, "y": -0.2, "z": 72.2 },
+      "mni_sd_estimate": { "x": 5.8, "y": 8.7, "z": 5.0 }
+    },
+    "FCz": {
+      "talairach": { "x": 1.0, "y": 1.0, "z": 72.8 },
+      "talairach_sd": { "x": 5.1, "y": 8.4, "z": 6.6 },
+      "mni": { "x": 1.0, "y": 0.7, "z": 79.1 },
+      "mni_sd_estimate": { "x": 5.2, "y": 8.6, "z": 7.2 }
+    },
+    "FC2": {
+      "talairach": { "x": 26.1, "y": 3.2, "z": 66.0 },
+      "talairach_sd": { "x": 4.9, "y": 9.0, "z": 5.6 },
+      "mni": { "x": 26.4, "y": 2.6, "z": 71.6 },
+      "mni_sd_estimate": { "x": 4.9, "y": 9.2, "z": 6.1 }
+    },
+    "FC4": {
+      "talairach": { "x": 47.5, "y": 4.6, "z": 49.7 },
+      "talairach_sd": { "x": 4.4, "y": 7.6, "z": 6.7 },
+      "mni": { "x": 48.0, "y": 4.1, "z": 53.8 },
+      "mni_sd_estimate": { "x": 4.4, "y": 7.8, "z": 7.4 }
+    },
+    "FC6": {
+      "talairach": { "x": 60.5, "y": 4.9, "z": 25.5 },
+      "talairach_sd": { "x": 2.8, "y": 7.3, "z": 7.8 },
+      "mni": { "x": 61.1, "y": 5.3, "z": 27.7 },
+      "mni_sd_estimate": { "x": 2.8, "y": 7.5, "z": 8.5 }
+    },
+    "FT8": {
+      "talairach": { "x": 60.2, "y": 4.7, "z": -2.8 },
+      "talairach_sd": { "x": 2.5, "y": 5.1, "z": 6.3 },
+      "mni": { "x": 60.8, "y": 5.0, "z": -3.7 },
+      "mni_sd_estimate": { "x": 2.5, "y": 5.2, "z": 7.5 }
+    },
+    "FT10": {
+      "talairach": { "x": 55.0, "y": -3.6, "z": -31.0 },
+      "talairach_sd": { "x": 3.2, "y": 5.6, "z": 7.9 },
+      "mni": { "x": 55.6, "y": -1.9, "z": -37.0 },
+      "mni_sd_estimate": { "x": 3.2, "y": 5.8, "z": 9.4 }
+    },
+
+    "T7": { "talairach": { "x": -65.8, "y": -17.8, "z": -2.9 }, "talairach_sd": { "x": 3.3, "y": 6.8, "z": 6.1 }, "mni": { "x": -66.5, "y": -17.5, "z": -3.5 }, "mni_sd_estimate": { "x": 3.3, "y": 6.9, "z": 7.2 } },
+    "C5":  { "talairach": { "x": -63.6, "y": -18.9, "z": 25.8 }, "talairach_sd": { "x": 3.3, "y": 7.8, "z": 5.8 }, "mni": { "x": -64.2, "y": -18.1, "z": 28.8 }, "mni_sd_estimate": { "x": 3.3, "y": 8.0, "z": 6.4 } },
+    "C3":  { "talairach": { "x": -49.1, "y": -20.7, "z": 53.2 }, "talairach_sd": { "x": 5.5, "y": 9.1, "z": 6.1 }, "mni": { "x": -49.6, "y": -21.1, "z": 58.1 }, "mni_sd_estimate": { "x": 5.6, "y": 9.4, "z": 6.8 } },
+    "C1":  { "talairach": { "x": -25.1, "y": -22.5, "z": 70.1 }, "talairach_sd": { "x": 5.6, "y": 9.2, "z": 5.3 }, "mni": { "x": -25.4, "y": -24.0, "z": 76.6 }, "mni_sd_estimate": { "x": 5.7, "y": 9.5, "z": 5.8 } },
+    "Cz":  { "talairach": { "x": 0.8, "y": -21.9, "z": 77.4 }, "talairach_sd": { "x": 4.9, "y": 9.4, "z": 6.7 }, "mni": { "x": 0.8, "y": -23.6, "z": 84.5 }, "mni_sd_estimate": { "x": 4.9, "y": 9.7, "z": 7.3 } },
+    "C2":  { "talairach": { "x": 26.7, "y": -20.9, "z": 69.5 }, "talairach_sd": { "x": 5.3, "y": 9.1, "z": 5.2 }, "mni": { "x": 27.0, "y": -22.4, "z": 75.9 }, "mni_sd_estimate": { "x": 5.4, "y": 9.4, "z": 5.7 } },
+    "C4":  { "talairach": { "x": 50.3, "y": -18.8, "z": 53.0 }, "talairach_sd": { "x": 4.6, "y": 8.3, "z": 6.4 }, "mni": { "x": 50.8, "y": -19.2, "z": 57.8 }, "mni_sd_estimate": { "x": 4.6, "y": 8.6, "z": 7.1 } },
+    "C6":  { "talairach": { "x": 65.2, "y": -18.0, "z": 26.4 }, "talairach_sd": { "x": 2.6, "y": 7.1, "z": 6.4 }, "mni": { "x": 65.9, "y": -17.0, "z": 29.7 }, "mni_sd_estimate": { "x": 2.6, "y": 7.3, "z": 7.1 } },
+    "T8":  { "talairach": { "x": 67.4, "y": -18.5, "z": -3.4 }, "talairach_sd": { "x": 2.3, "y": 6.9, "z": 7.0 }, "mni": { "x": 68.1, "y": -18.1, "z": -4.0 }, "mni_sd_estimate": { "x": 2.3, "y": 7.1, "z": 8.3 } },
+
+    "TP7": { "talairach": { "x": -63.6, "y": -44.7, "z": -4.0 }, "talairach_sd": { "x": 4.5, "y": 7.2, "z": 6.6 }, "mni": { "x": -64.2, "y": -44.0, "z": -5.0 }, "mni_sd_estimate": { "x": 4.5, "y": 7.4, "z": 7.8 } },
+    "CP5": { "talairach": { "x": -61.8, "y": -46.2, "z": 22.5 }, "talairach_sd": { "x": 4.7, "y": 8.0, "z": 7.6 }, "mni": { "x": -62.4, "y": -45.1, "z": 25.7 }, "mni_sd_estimate": { "x": 4.7, "y": 8.2, "z": 8.4 } },
+    "CP3": { "talairach": { "x": -46.9, "y": -47.7, "z": 49.7 }, "talairach_sd": { "x": 5.8, "y": 9.3, "z": 7.7 }, "mni": { "x": -47.4, "y": -48.4, "z": 54.4 }, "mni_sd_estimate": { "x": 5.9, "y": 9.6, "z": 8.5 } },
+    "CP1": { "talairach": { "x": -24.0, "y": -49.1, "z": 66.1 }, "talairach_sd": { "x": 6.4, "y": 9.9, "z": 8.0 }, "mni": { "x": -24.2, "y": -51.0, "z": 72.0 }, "mni_sd_estimate": { "x": 6.5, "y": 10.2, "z": 8.8 } },
+    "CPz": { "talairach": { "x": 0.7, "y": -47.9, "z": 72.6 }, "talairach_sd": { "x": 4.9, "y": 9.3, "z": 7.7 }, "mni": { "x": 0.7, "y": -50.0, "z": 79.3 }, "mni_sd_estimate": { "x": 4.9, "y": 9.6, "z": 8.5 } },
+    "CP2": { "talairach": { "x": 25.8, "y": -47.1, "z": 66.0 }, "talairach_sd": { "x": 6.2, "y": 9.2, "z": 7.5 }, "mni": { "x": 26.1, "y": -49.1, "z": 71.8 }, "mni_sd_estimate": { "x": 6.3, "y": 9.5, "z": 8.2 } },
+    "CP4": { "talairach": { "x": 49.5, "y": -45.5, "z": 50.7 }, "talairach_sd": { "x": 5.9, "y": 7.9, "z": 7.1 }, "mni": { "x": 50.0, "y": -46.4, "z": 55.4 }, "mni_sd_estimate": { "x": 6.0, "y": 8.1, "z": 7.8 } },
+    "CP6": { "talairach": { "x": 62.9, "y": -44.6, "z": 24.4 }, "talairach_sd": { "x": 3.7, "y": 6.8, "z": 8.4 }, "mni": { "x": 63.5, "y": -43.2, "z": 28.0 }, "mni_sd_estimate": { "x": 3.7, "y": 7.0, "z": 9.2 } },
+    "TP8": { "talairach": { "x": 64.6, "y": -45.4, "z": -3.7 }, "talairach_sd": { "x": 3.3, "y": 6.6, "z": 7.3 }, "mni": { "x": 65.3, "y": -44.7, "z": -4.7 }, "mni_sd_estimate": { "x": 3.3, "y": 6.8, "z": 8.7 } },
+
+    "P9":  { "talairach": { "x": -50.8, "y": -51.3, "z": -37.7 }, "talairach_sd": { "x": 4.7, "y": 8.6, "z": 8.3 }, "mni": { "x": -51.3, "y": -49.0, "z": -45.6 }, "mni_sd_estimate": { "x": 4.7, "y": 8.9, "z": 9.9 } },
+    "P7":  { "talairach": { "x": -55.9, "y": -64.8, "z": 0.0 }, "talairach_sd": { "x": 4.5, "y": 5.3, "z": 9.3 }, "mni": { "x": -56.5, "y": -66.7, "z": 3.6 }, "mni_sd_estimate": { "x": 4.5, "y": 5.5, "z": 10.1 } },
+    "P5":  { "talairach": { "x": -52.7, "y": -67.1, "z": 19.9 }, "talairach_sd": { "x": 5.0, "y": 6.8, "z": 10.4 }, "mni": { "x": -53.2, "y": -68.2, "z": 24.4 }, "mni_sd_estimate": { "x": 5.1, "y": 7.1, "z": 11.3 } },
+    "P3":  { "talairach": { "x": -41.4, "y": -67.8, "z": 42.4 }, "talairach_sd": { "x": 5.7, "y": 8.4, "z": 9.5 }, "mni": { "x": -41.8, "y": -69.2, "z": 49.0 }, "mni_sd_estimate": { "x": 5.8, "y": 8.7, "z": 10.4 } },
+    "P1":  { "talairach": { "x": -21.6, "y": -71.3, "z": 52.6 }, "talairach_sd": { "x": 5.8, "y": 9.3, "z": 10.1 }, "mni": { "x": -21.8, "y": -73.0, "z": 60.4 }, "mni_sd_estimate": { "x": 5.9, "y": 9.6, "z": 11.1 } },
+    "Pz":  { "talairach": { "x": 0.7, "y": -69.3, "z": 56.9 }, "talairach_sd": { "x": 6.3, "y": 8.4, "z": 9.9 }, "mni": { "x": 0.7, "y": -71.0, "z": 65.4 }, "mni_sd_estimate": { "x": 6.4, "y": 8.7, "z": 10.9 } },
+    "P2":  { "talairach": { "x": 24.4, "y": -69.9, "z": 53.5 }, "talairach_sd": { "x": 6.3, "y": 8.5, "z": 9.4 }, "mni": { "x": 24.6, "y": -71.7, "z": 61.6 }, "mni_sd_estimate": { "x": 6.4, "y": 8.8, "z": 10.3 } },
+    "P4":  { "talairach": { "x": 44.2, "y": -65.8, "z": 42.7 }, "talairach_sd": { "x": 6.5, "y": 8.1, "z": 8.5 }, "mni": { "x": 44.6, "y": -67.2, "z": 49.4 }, "mni_sd_estimate": { "x": 6.6, "y": 8.3, "z": 9.3 } },
+    "P6":  { "talairach": { "x": 54.4, "y": -65.3, "z": 20.2 }, "talairach_sd": { "x": 4.3, "y": 6.0, "z": 9.4 }, "mni": { "x": 54.9, "y": -66.3, "z": 24.8 }, "mni_sd_estimate": { "x": 4.3, "y": 6.2, "z": 10.2 } },
+    "P8":  { "talairach": { "x": 56.4, "y": -64.4, "z": 0.1 }, "talairach_sd": { "x": 3.7, "y": 5.6, "z": 8.5 }, "mni": { "x": 57.0, "y": -66.1, "z": 3.8 }, "mni_sd_estimate": { "x": 3.7, "y": 5.8, "z": 9.3 } },
+    "P10": { "talairach": { "x": 51.0, "y": -53.9, "z": -36.5 }, "talairach_sd": { "x": 3.5, "y": 8.7, "z": 10.0 }, "mni": { "x": 51.5, "y": -51.3, "z": -44.1 }, "mni_sd_estimate": { "x": 3.5, "y": 9.0, "z": 12.0 } },
+
+    "PO7": { "talairach": { "x": -44.0, "y": -81.7, "z": 1.6 }, "talairach_sd": { "x": 4.7, "y": 4.9, "z": 10.6 }, "mni": { "x": -44.4, "y": -84.0, "z": 5.9 }, "mni_sd_estimate": { "x": 4.7, "y": 5.1, "z": 11.5 } },
+    "PO3": { "talairach": { "x": -33.3, "y": -84.3, "z": 26.5 }, "talairach_sd": { "x": 6.3, "y": 5.7, "z": 11.4 }, "mni": { "x": -33.6, "y": -87.3, "z": 32.0 }, "mni_sd_estimate": { "x": 6.4, "y": 5.9, "z": 12.3 } },
+    "POz": { "talairach": { "x": 0.0, "y": -87.9, "z": 33.5 }, "talairach_sd": { "x": 6.5, "y": 6.9, "z": 11.9 }, "mni": { "x": 0.0, "y": -91.6, "z": 40.3 }, "mni_sd_estimate": { "x": 6.6, "y": 7.1, "z": 12.9 } },
+    "PO4": { "talairach": { "x": 35.2, "y": -82.6, "z": 26.1 }, "talairach_sd": { "x": 6.5, "y": 6.4, "z": 9.7 }, "mni": { "x": 35.6, "y": -85.7, "z": 31.7 }, "mni_sd_estimate": { "x": 6.6, "y": 6.6, "z": 10.5 } },
+    "PO8": { "talairach": { "x": 43.3, "y": -82.0, "z": 0.7 }, "talairach_sd": { "x": 4.0, "y": 5.5, "z": 10.7 }, "mni": { "x": 43.7, "y": -84.5, "z": 5.1 }, "mni_sd_estimate": { "x": 4.0, "y": 5.7, "z": 11.6 } },
+
+    "O1": { "talairach": { "x": -25.8, "y": -93.3, "z": 7.7 }, "talairach_sd": { "x": 6.3, "y": 4.6, "z": 12.3 }, "mni": { "x": -26.1, "y": -96.0, "z": 13.8 }, "mni_sd_estimate": { "x": 6.4, "y": 4.8, "z": 13.3 } },
+    "Oz": { "talairach": { "x": 0.3, "y": -97.1, "z": 8.7 }, "talairach_sd": { "x": 5.9, "y": 5.2, "z": 11.6 }, "mni": { "x": 0.3, "y": -99.9, "z": 15.1 }, "mni_sd_estimate": { "x": 6.0, "y": 5.4, "z": 12.6 } },
+    "O2": { "talairach": { "x": 25.0, "y": -95.2, "z": 6.2 }, "talairach_sd": { "x": 5.7, "y": 5.8, "z": 11.4 }, "mni": { "x": 25.3, "y": -97.9, "z": 12.3 }, "mni_sd_estimate": { "x": 5.8, "y": 6.0, "z": 12.3 } }
+  }
+}
