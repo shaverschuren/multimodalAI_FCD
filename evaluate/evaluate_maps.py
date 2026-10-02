@@ -32,21 +32,19 @@ python evaluate/evaluate_maps.py \\
     --box_dsc_threshold 0.22 \\
     --threshold_min 0.01 \\
     --threshold_max 0.99 \\
-    --threshold_steps 99 \\
+    --threshold_steps 10 \\
     --connectivity 26
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import itertools
 import json
 import math
-import os
 import re
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -222,23 +220,6 @@ def auc_pr(
     return float(_trapz(precisions, recalls))
 
 
-def _nan_mean(values: List[Optional[float]]) -> Optional[float]:
-    """Mean over a list, ignoring None entries."""
-    valid = [v for v in values if v is not None]
-    if not valid:
-        return None
-    return float(np.mean(valid))
-
-
-def _ci95_percentile(values: List[Optional[float]]) -> Optional[List[float]]:
-    """Return empirical 95% CI [p2.5, p97.5] over non-None values."""
-    valid = np.asarray([v for v in values if v is not None], dtype=np.float64)
-    if valid.size == 0:
-        return None
-    lo, hi = np.percentile(valid, [2.5, 97.5])
-    return [float(lo), float(hi)]
-
-
 def _extract_fold_id(path: str) -> Optional[str]:
     """Extract fold identifier (e.g., fold_0) from a prediction path."""
     for part in Path(path).parts:
@@ -408,30 +389,18 @@ def _load_kfold_split_ids(json_path: Path, role: str) -> Dict[str, set]:
     if not isinstance(fold_payload, dict):
         return {}
 
-    role_key = {
-        "val": "val_ids",
-        "test": "test_ids",
-        "all": None,
-    }.get(role)
+    role_key = {"val": "val_ids", "test": "test_ids"}[role]
 
     out: Dict[str, set] = {}
     for fold_name, fold_data in fold_payload.items():
         if not isinstance(fold_data, dict):
             continue
-        if role_key is None:
-            merged: set = set()
-            for k in ("val_ids", "test_ids", "train_ids"):
-                ids = fold_data.get(k, [])
-                if isinstance(ids, list):
-                    merged |= {str(v).upper() for v in ids}
-            out[str(fold_name)] = merged
-            continue
-
         ids = fold_data.get(role_key, [])
         if not isinstance(ids, list):
             continue
         out[str(fold_name)] = {str(v).upper() for v in ids}
     return out
+
 
 def _index_fold_preds_by_role(
     pred_dir: Path,
@@ -441,30 +410,21 @@ def _index_fold_preds_by_role(
     fold_split_json: Optional[Path],
     fold_role: str,
 ) -> Dict[str, Tuple[Path, str, str]]:
-    """Index fold predictions and optionally filter by split role per fold."""
+    """Index predictions from folds selected by split role."""
     fold_dirs = _find_fold_dirs(pred_dir)
     if not fold_dirs:
         raise FileNotFoundError(
             f"No fold_<idx> directories found under: {pred_dir}"
         )
 
-    selected_ids_by_fold: Dict[str, set] = {}
-    if fold_role in {"val", "test"}:
-        splits_path = fold_split_json or (Path(K_FOLD_SPLITS_PATH) if K_FOLD_SPLITS_PATH else None)
-        if splits_path is None:
-            raise ValueError(
-                "No fold split JSON available. Pass --fold_split_json or set data_root in config.json."
-            )
-        if not splits_path.is_file():
-            raise FileNotFoundError(
-                f"Fold split JSON not found: {splits_path}"
-            )
-        selected_ids_by_fold = _load_kfold_split_ids(splits_path, fold_role)
-    else:
-        warnings_list.append(
-            "[pred] fold_role=all selected: no split-ID filtering will be applied. "
-            "This is diagnostic only and not appropriate for primary performance reporting."
+    splits_path = fold_split_json or (Path(K_FOLD_SPLITS_PATH) if K_FOLD_SPLITS_PATH else None)
+    if splits_path is None:
+        raise ValueError(
+            "No fold split JSON available. Pass --fold_split_json or set data_root in config.json."
         )
+    if not splits_path.is_file():
+        raise FileNotFoundError(f"Fold split JSON not found: {splits_path}")
+    selected_ids_by_fold = _load_kfold_split_ids(splits_path, fold_role)
 
     pred_map: Dict[str, Tuple[Path, str, str]] = {}
     first_fold_seen: Dict[str, str] = {}
@@ -480,16 +440,13 @@ def _index_fold_preds_by_role(
             prefer_soft_predictions=True,
         )
 
-        if fold_role in {"val", "test"}:
-            allowed_ids = selected_ids_by_fold.get(fold_name, set())
-            if not allowed_ids:
-                warnings_list.append(
-                    f"[pred:{fold_name}] Missing or empty {fold_role}_ids in split JSON; skipping fold."
-                )
-                continue
-            candidate_ids = sorted(set(fold_pred_map.keys()) & allowed_ids)
-        else:
-            candidate_ids = sorted(fold_pred_map.keys())
+        allowed_ids = selected_ids_by_fold.get(fold_name, set())
+        if not allowed_ids:
+            warnings_list.append(
+                f"[pred:{fold_name}] Missing or empty {fold_role}_ids in split JSON; skipping fold."
+            )
+            continue
+        candidate_ids = sorted(set(fold_pred_map.keys()) & allowed_ids)
 
         for sid in candidate_ids:
             path = fold_pred_map[sid]
@@ -506,37 +463,14 @@ def _index_fold_preds_by_role(
     return pred_map
 
 
-def _index_legacy_mode_preds(
+def _index_flat_validation_preds(
     pred_dir: Path,
     pred_pattern: str,
     subject_regex: Optional[str],
     warnings_list: List[str],
-    nnunet_preds: bool,
-    test_set: bool,
 ) -> Dict[str, Tuple[Path, str, str]]:
-    """Legacy prediction discovery for backward compatibility."""
+    """Index flat validation predictions by subject ID."""
     pred_map: Dict[str, Tuple[Path, str, str]] = {}
-
-    if test_set or nnunet_preds:
-        legacy_role = "test" if test_set else "val"
-        warnings_list.append(
-            f"[pred] Legacy flag selected ({'--test-set' if test_set else '--nnunet-preds'}); "
-            f"routing internally as fold-role '{legacy_role}'."
-        )
-        if K_FOLD_SPLITS_PATH is None:
-            raise ValueError(
-                "No fold split JSON available for legacy mode. "
-                "Pass --fold_split_json or set data_root in config.json."
-            )
-        return _index_fold_preds_by_role(
-            pred_dir=pred_dir,
-            pred_pattern=pred_pattern,
-            subject_regex=subject_regex,
-            warnings_list=warnings_list,
-            fold_split_json=Path(K_FOLD_SPLITS_PATH),
-            fold_role=legacy_role,
-        )
-
     flat_pred_map = _index_files_by_id(
         pred_dir,
         pred_pattern,
@@ -726,8 +660,6 @@ def discover_subject_files(
     warnings_list: List[str],
     fold_split_json: Optional[Path],
     fold_role: str,
-    nnunet_preds: bool = False,
-    test_set: bool = False,
     required_subject_ids: Optional[List[str]] = None,
 ) -> Tuple[List[MatchedPrediction], List[Dict[str, str]]]:
     """
@@ -739,10 +671,6 @@ def discover_subject_files(
     Primary mode uses fold-based split-role filtering:
     - fold_role=test: keep test_ids per fold
     - fold_role=val : keep val_ids per fold
-    - fold_role=all : do not filter by split IDs
-
-    Legacy flags --nnunet-preds and --test-set are internally mapped to
-    fold_role=val and fold_role=test respectively.
 
     Returns (matched_list, skipped_list), where matched_list carries fold_id and split_role.
     """
@@ -757,13 +685,11 @@ def discover_subject_files(
             fold_role=fold_role,
         )
     else:
-        pred_map = _index_legacy_mode_preds(
+        pred_map = _index_flat_validation_preds(
             pred_dir=pred_dir,
             pred_pattern=pred_pattern,
             subject_regex=subject_regex,
             warnings_list=warnings_list,
-            nnunet_preds=nnunet_preds,
-            test_set=test_set,
         )
     gt_map = _index_files_by_id(
         gt_dir, gt_pattern, subject_regex, warnings_list, "gt"
@@ -1259,7 +1185,6 @@ def compute_voxel_metrics(
         "voxel_dice": voxel_dice,
         "voxel_precision": voxel_precision,
         "voxel_recall": voxel_recall,
-        "voxel_sensitivity": voxel_recall,
         "voxel_specificity": safe_div(tn, tn + fp),
         "pred_volume_voxels": pred_volume_voxels,
         "gt_volume_voxels": gt_volume_voxels,
@@ -2086,53 +2011,14 @@ def aggregate_fixed_metrics(
             "statistic": "mean",
             "unit": "subject",
         },
-        # Backward-compatible aliases
-        "detection_rate_cases": {
-            "estimate": safe_div(sum(all_detect), len(all_detect)) if all_detect else None,
-            "ci": _bootstrap_binary_rate(all_detect, n_bootstrap, ci_level, bootstrap_seed + 201),
-            "n": len(all_detect),
-            "statistic": "mean",
-            "unit": "subject",
-        },
-        "pinpointing_rate_cases": {
-            "estimate": safe_div(sum(all_pin), len(all_pin)) if all_pin else None,
-            "ci": _bootstrap_binary_rate(all_pin, n_bootstrap, ci_level, bootstrap_seed + 202),
-            "n": len(all_pin),
-            "statistic": "mean",
-            "unit": "subject",
-        },
-    }
-
-    # Compatibility view for downstream code expecting old keys.
-    legacy_subject_level = {
-        "cases": {
-            "n": len(cases),
-            "detection_rate": subject_rates["detection_rate_cases"]["estimate"],
-            "pinpointing_rate": subject_rates["pinpointing_rate_cases"]["estimate"],
-            "mean_pred_clusters_per_case": _nan_mean([float(m["cluster"].get("n_pred_clusters", 0)) for _, m in cases]),
-            "median_pred_clusters_per_case": float(np.median([float(m["cluster"].get("n_pred_clusters", 0)) for _, m in cases])) if cases else None,
-            "mean_fp_clusters_per_case": _nan_mean([float(m["cluster"]["detection"].get("n_fp_pred_clusters", 0)) for _, m in cases]),
-            "median_fp_clusters_per_case": float(np.median([float(m["cluster"]["detection"].get("n_fp_pred_clusters", 0)) for _, m in cases])) if cases else None,
-            "percent_empty_prediction_cases": safe_div(sum(1 for _, m in cases if m.get("pred_empty", False)) * 100.0, len(cases)),
-        },
-        "controls": {
-            "n": len(controls),
-            "specificity": subject_rates["specificity_controls"]["estimate"],
-            "false_positive_subject_rate": subject_rates["false_positive_subject_rate_controls"]["estimate"],
-            "mean_pred_clusters_per_control": _nan_mean([float(m["cluster"].get("n_pred_clusters", 0)) for _, m in controls]),
-            "median_pred_clusters_per_control": float(np.median([float(m["cluster"].get("n_pred_clusters", 0)) for _, m in controls])) if controls else None,
-            "percent_empty_prediction_controls": safe_div(sum(1 for _, m in controls if m.get("pred_empty", False)) * 100.0, len(controls)),
-        },
     }
 
     return {
         "voxel_macro_all_subjects": voxel_macro_all_subjects,
-        "voxel_macro_cases": voxel_macro_all_subjects,
         "voxel_micro_all_subjects": voxel_micro_all_subjects,
         "cluster_detection": cluster_detection,
         "cluster_pinpointing": cluster_pinpointing,
         "subject_rates": subject_rates,
-        "legacy_subject_level": legacy_subject_level,
     }
 
 
@@ -2353,7 +2239,7 @@ def print_summary(results: Dict[str, Any]) -> None:
     print(f"Controls:           {dataset['n_controls']}")
     print(f"Skipped:            {dataset['n_skipped']}")
 
-    vm = agg.get("voxel_macro_all_subjects", agg["voxel_macro_cases"])
+    vm = agg["voxel_macro_all_subjects"]
     vmi = agg["voxel_micro_all_subjects"]
     cd = agg["cluster_detection"]
     cp = agg["cluster_pinpointing"]
@@ -2446,191 +2332,6 @@ def save_json(results: Dict[str, Any], out_json: Path) -> None:
     with open(str(out_json), "w", encoding="utf-8") as f:
         json.dump(safe, f, indent=2)
     print(f"Results saved to: {out_json}")
-
-
-def _resolve_aggregate_nifti_reference(
-    subject_records: Sequence[SubjectRecord],
-    warnings_list: List[str],
-) -> Tuple[Tuple[int, ...], np.ndarray]:
-    """Resolve a shared grid and affine for aggregate count-map export."""
-    if not subject_records:
-        raise ValueError("No subject records available for aggregate NIfTI export.")
-
-    ref_shape = tuple(int(v) for v in subject_records[0].meta.shape)
-    ref_affine: Optional[np.ndarray] = None
-
-    for record in subject_records:
-        if tuple(int(v) for v in record.meta.shape) != ref_shape:
-            raise ValueError(
-                "Aggregate NIfTI export requires all evaluated subjects to share "
-                f"one grid. Found shapes {ref_shape} and {record.meta.shape}."
-            )
-        if record.meta.affine is not None and ref_affine is None:
-            ref_affine = np.asarray(record.meta.affine, dtype=np.float32)
-
-    if ref_affine is None:
-        warnings_list.append(
-            "[aggregate-nifti] No affine metadata available across evaluated subjects; "
-            "writing aggregate maps with identity affine."
-        )
-        ref_affine = np.eye(4, dtype=np.float32)
-    else:
-        for record in subject_records:
-            if record.meta.affine is None:
-                continue
-            if not np.allclose(record.meta.affine, ref_affine, atol=1e-4):
-                raise ValueError(
-                    "Aggregate NIfTI export requires all evaluated subjects to share "
-                    "one affine. Found mismatched affines across subjects."
-                )
-
-    return ref_shape, ref_affine
-
-
-def export_fixed_threshold_aggregate_niftis(
-    subject_records: Sequence[SubjectRecord],
-    per_subject_fixed: Sequence[Dict[str, Any]],
-    threshold: float,
-    connectivity: int,
-    min_cluster_size: int,
-    out_dir: Path,
-    warnings_list: List[str],
-) -> Dict[str, str]:
-    """
-    Export aggregate count maps for GT, thresholded predictions, and detection FPs.
-
-    The false-positive map uses the cluster-level detection criterion at the fixed
-    threshold: only voxels belonging to predicted clusters classified as detection
-    false positives are accumulated.
-    """
-    if len(subject_records) != len(per_subject_fixed):
-        raise ValueError("subject_records and per_subject_fixed must have same length")
-
-    try:
-        import nibabel as nib  # type: ignore
-    except ImportError as exc:
-        raise ImportError(
-            "nibabel is required to export aggregate NIfTI maps."
-        ) from exc
-
-    ref_shape, ref_affine = _resolve_aggregate_nifti_reference(
-        subject_records, warnings_list
-    )
-    gt_counts = np.zeros(ref_shape, dtype=np.int32)
-    pred_counts = np.zeros(ref_shape, dtype=np.int32)
-    fp_counts = np.zeros(ref_shape, dtype=np.int32)
-
-    for record, fixed_metrics in zip(subject_records, per_subject_fixed):
-        pred_bin = binarize_prediction(record.pred_soft, threshold)
-        pred_counts += pred_bin.astype(np.int32)
-        gt_counts += record.gt_bin.astype(np.int32)
-
-        pred_label_img, _ = extract_components(
-            pred_bin.astype(bool),
-            record.meta.voxel_volume_mm3,
-            connectivity,
-            min_cluster_size,
-        )
-        fp_cluster_ids = [
-            int(cluster["pred_cluster_id"])
-            for cluster in fixed_metrics["cluster"].get("predicted_clusters", [])
-            if bool(cluster.get("is_fp_detection_cluster", False))
-        ]
-        if fp_cluster_ids:
-            fp_counts += np.isin(pred_label_img, fp_cluster_ids).astype(np.int32)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    gt_path = out_dir / "aggregate_gt_counts.nii.gz"
-    pred_path = out_dir / "aggregate_prediction_counts.nii.gz"
-    fp_path = out_dir / "aggregate_false_positive_counts.nii.gz"
-
-    nib.save(nib.Nifti1Image(gt_counts.astype(np.int32), ref_affine), str(gt_path))
-    nib.save(nib.Nifti1Image(pred_counts.astype(np.int32), ref_affine), str(pred_path))
-    nib.save(nib.Nifti1Image(fp_counts.astype(np.int32), ref_affine), str(fp_path))
-
-    print(f"Aggregate GT count map saved to: {gt_path}")
-    print(f"Aggregate prediction count map saved to: {pred_path}")
-    print(f"Aggregate false-positive count map saved to: {fp_path}")
-
-    return {
-        "gt_counts": str(gt_path),
-        "prediction_counts": str(pred_path),
-        "false_positive_counts": str(fp_path),
-    }
-
-
-def save_subject_table(per_subject_rows: List[Dict[str, Any]], out_path: Path) -> None:
-    """Write one-row-per-subject flat table for downstream stats/plotting."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fieldnames = [
-        "subject_id",
-        "fold_id",
-        "split_role",
-        "prediction_path",
-        "gt_path",
-        "is_control",
-        "gt_empty",
-        "voxel_dice",
-        "voxel_precision",
-        "voxel_recall",
-        "cluster_det_precision",
-        "cluster_det_recall",
-        "cluster_det_f1",
-        "cluster_pin_precision",
-        "cluster_pin_recall",
-        "cluster_pin_f1",
-        "subject_detected",
-        "subject_pinpointed",
-        "n_pred_clusters",
-        "n_fp_det_clusters",
-        "n_fp_pin_clusters",
-        "voxel_tp",
-        "voxel_fp",
-        "voxel_fn",
-        "voxel_tn",
-    ]
-
-    with open(str(out_path), "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in per_subject_rows:
-            fm = row.get("fixed_threshold_metrics", {})
-            vox = fm.get("voxel", {})
-            cl = fm.get("cluster", {})
-            det = cl.get("detection", {})
-            pin = cl.get("pinpointing", {})
-            writer.writerow(
-                {
-                    "subject_id": row.get("subject_id"),
-                    "fold_id": row.get("fold_id"),
-                    "split_role": row.get("split_role"),
-                    "prediction_path": row.get("prediction_path"),
-                    "gt_path": row.get("gt_path"),
-                    "is_control": row.get("is_control"),
-                    "gt_empty": fm.get("gt_empty"),
-                    "voxel_dice": vox.get("voxel_dice"),
-                    "voxel_precision": vox.get("voxel_precision"),
-                    "voxel_recall": vox.get("voxel_recall"),
-                    "cluster_det_precision": det.get("cluster_precision"),
-                    "cluster_det_recall": det.get("cluster_sensitivity"),
-                    "cluster_det_f1": det.get("cluster_f1"),
-                    "cluster_pin_precision": pin.get("cluster_precision"),
-                    "cluster_pin_recall": pin.get("cluster_sensitivity"),
-                    "cluster_pin_f1": pin.get("cluster_f1"),
-                    "subject_detected": det.get("subject_detected"),
-                    "subject_pinpointed": pin.get("subject_pinpointed"),
-                    "n_pred_clusters": cl.get("n_pred_clusters"),
-                    "n_fp_det_clusters": det.get("n_fp_pred_clusters"),
-                    "n_fp_pin_clusters": pin.get("n_fp_pred_clusters"),
-                    "voxel_tp": vox.get("tp"),
-                    "voxel_fp": vox.get("fp"),
-                    "voxel_fn": vox.get("fn"),
-                    "voxel_tn": vox.get("tn"),
-                }
-            )
-
-    print(f"Subject table saved to: {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -2741,13 +2442,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--save_per_subject",
-        type=lambda x: x.lower() not in ("false", "0", "no"),
-        default=True,
-        metavar="BOOL",
-        help="Include per-subject details in the JSON output (default: True).",
-    )
-    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print progress messages.",
@@ -2764,24 +2458,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--nnunet_preds",
-        action="store_true",
-        help=(
-            "Enable nnUNet fold-mode prediction discovery: find fold_<idx> "
-            "directories and keep only val_ids per fold from k_fold_splits.json. "
-            "Deprecated legacy alias for --fold-role val."
-        ),
-    )
-    parser.add_argument(
-        "--test_set",
-        action="store_true",
-        help=(
-            "Enable test-set fold discovery: --pred_dir must contain fold_<idx> "
-            "directories directly, and prediction files are searched recursively "
-            "under each fold directory. Deprecated legacy alias for --fold-role test."
-        ),
-    )
-    parser.add_argument(
         "--fold_split_json",
         type=Path,
         default=None,
@@ -2793,7 +2469,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fold_role",
         type=str,
-        choices=["test", "val", "all"],
+        choices=["test", "val"],
         default="test",
         help=(
             "Split role to select per fold. Primary mode is test: one held-out "
@@ -2846,11 +2522,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--skip_threshold_sweep",
-        action="store_true",
-        help="Skip threshold sweep and compute only fixed-threshold metrics.",
-    )
-    parser.add_argument(
         "--n_bootstrap",
         type=int,
         default=10000,
@@ -2875,26 +2546,6 @@ def parse_args() -> argparse.Namespace:
         default="mean",
         help="Summary statistic for macro subject metrics (default: mean).",
     )
-    parser.add_argument(
-        "--out_subject_csv",
-        type=Path,
-        default=None,
-        help="Optional path to export one-row-per-subject flat metrics CSV.",
-    )
-    parser.add_argument(
-        "--save_aggregate_niftis",
-        action="store_true",
-        help=(
-            "If set, export aggregate NIfTI count maps for GT, thresholded "
-            "predictions, and detection-level false-positive clusters."
-        ),
-    )
-    parser.add_argument(
-        "--aggregate_nifti_dir",
-        type=Path,
-        default=None,
-        help="Output directory for aggregate NIfTI exports.",
-    )
     return parser.parse_args()
 
 
@@ -2908,13 +2559,6 @@ def main() -> None:
     warnings_list: List[str] = []
     skipped: List[Dict[str, str]] = []
     required_subject_ids: Optional[List[str]] = None
-    aggregate_nifti_paths: Dict[str, str] = {}
-
-    if args.save_aggregate_niftis and args.aggregate_nifti_dir is None:
-        raise SystemExit(
-            "ERROR: --aggregate_nifti_dir must be provided when "
-            "--save_aggregate_niftis is set."
-        )
 
     if args.subjects_list is not None:
         try:
@@ -2933,22 +2577,6 @@ def main() -> None:
     # 1. Discover prediction and GT files
     # ------------------------------------------------------------------ #
     effective_fold_role = args.fold_role
-    if args.nnunet_preds and args.test_set:
-        warnings_list.append(
-            "Both --nnunet-preds and --test-set were set. --test-set takes precedence."
-        )
-    if args.nnunet_preds and args.fold_role == "test":
-        effective_fold_role = "val"
-        warnings_list.append(
-            "Legacy --nnunet-preds detected; using fold-role 'val'."
-        )
-    if args.test_set:
-        effective_fold_role = "test"
-
-    if effective_fold_role == "all":
-        warnings_list.append(
-            "fold-role=all selected; this is not appropriate for primary performance reporting."
-        )
 
     if args.verbose:
         print(
@@ -2969,8 +2597,6 @@ def main() -> None:
             warnings_list=warnings_list,
             fold_split_json=args.fold_split_json,
             fold_role=effective_fold_role,
-            nnunet_preds=args.nnunet_preds,
-            test_set=args.test_set,
             required_subject_ids=required_subject_ids,
         )
     except ValueError as exc:
@@ -2978,21 +2604,9 @@ def main() -> None:
     skipped.extend(file_skipped)
 
     if not matched:
-        if args.test_set:
-            hint = (
-                "Check that --pred-dir contains fold_<idx> directories directly and "
-                "that prediction files exist recursively inside each fold directory."
-            )
-        elif args.nnunet_preds:
-            hint = "Check fold_<idx> directories exist and val_ids are populated in k_fold_splits.json."
-        else:
-            hint = (
-                "Prediction paths must include 'val' or 'validation' and must not include 'train'. "
-                "Use --nnunet-preds for fold-based val discovery or --test-set for test-set folds."
-            )
         print(
-            "ERROR: No matched subject files found. "
-            f"Check --pred_dir, --gt_dir, and --pred-pattern / --gt-pattern. {hint}"
+            "No matched subject files found. Check prediction/ground-truth directories, "
+            "patterns, and subject IDs."
         )
         return
 
@@ -3163,53 +2777,40 @@ def main() -> None:
         summary_stat=args.summary_stat,
     )
 
-    if args.save_aggregate_niftis:
-        aggregate_nifti_paths = export_fixed_threshold_aggregate_niftis(
-            subject_records=subject_records,
-            per_subject_fixed=per_subject_fixed,
-            threshold=args.threshold,
-            connectivity=args.connectivity,
-            min_cluster_size=args.min_cluster_size,
-            out_dir=args.aggregate_nifti_dir,
-            warnings_list=warnings_list,
-        )
-
     # ------------------------------------------------------------------ #
     # 4. Build per-subject JSON entries
     # ------------------------------------------------------------------ #
     per_subject_out: List[Dict[str, Any]] = []
-    if args.save_per_subject:
-        for rec, fixed_m in tqdm(
-            zip(subject_records, per_subject_fixed),
-            desc="Building per-subject JSON",
-            unit="subject",
-            total=len(subject_records),
-        ):
-            # Separate verbose cluster lists from compact metrics
-            cluster_section = dict(fixed_m["cluster"])
-            predicted_clusters = cluster_section.pop("predicted_clusters", [])
-            gt_comp_details = cluster_section.pop("gt_components", [])
+    for rec, fixed_m in tqdm(
+        zip(subject_records, per_subject_fixed),
+        desc="Building per-subject JSON",
+        unit="subject",
+        total=len(subject_records),
+    ):
+        cluster_section = dict(fixed_m["cluster"])
+        predicted_clusters = cluster_section.pop("predicted_clusters", [])
+        gt_comp_details = cluster_section.pop("gt_components", [])
 
-            fixed_metrics = {
-                k: v for k, v in fixed_m.items() if k != "cluster"
-            }
-            fixed_metrics["cluster"] = cluster_section
+        fixed_metrics = {
+            key: value for key, value in fixed_m.items() if key != "cluster"
+        }
+        fixed_metrics["cluster"] = cluster_section
 
-            per_subject_out.append({
-                "subject_id": rec.subject_id,
-                "fold_id": rec.fold_id,
-                "split_role": rec.split_role,
-                "prediction_path": rec.pred_path,
-                "gt_path": rec.gt_path,
-                "is_control": rec.is_control,
-                "shape": list(rec.meta.shape),
-                "voxel_volume_mm3": rec.meta.voxel_volume_mm3,
-                "fixed_threshold_metrics": fixed_metrics,
-                "clusters": {
-                    "predicted": predicted_clusters,
-                    "gt_components": gt_comp_details,
-                },
-            })
+        per_subject_out.append({
+            "subject_id": rec.subject_id,
+            "fold_id": rec.fold_id,
+            "split_role": rec.split_role,
+            "prediction_path": rec.pred_path,
+            "gt_path": rec.gt_path,
+            "is_control": rec.is_control,
+            "shape": list(rec.meta.shape),
+            "voxel_volume_mm3": rec.meta.voxel_volume_mm3,
+            "fixed_threshold_metrics": fixed_metrics,
+            "clusters": {
+                "predicted": predicted_clusters,
+                "gt_components": gt_comp_details,
+            },
+        })
 
     # ------------------------------------------------------------------ #
     # 5. Threshold sweep
@@ -3221,28 +2822,18 @@ def main() -> None:
             np.linspace(args.threshold_min, args.threshold_max, args.threshold_steps)
         )
 
-    if args.skip_threshold_sweep:
-        if args.verbose:
-            print("Skipping threshold sweep (--skip-threshold-sweep).")
-        curves = {
-            "voxel_pr": {"auc": None, "points": []},
-            "cluster_detection_pr": {"auc": None, "points": []},
-            "cluster_pinpoint_pr": {"auc": None, "points": []},
-            "detection_vs_fp_cluster_burden": {"points": []},
-        }
-    else:
-        print(
-            f"Running threshold sweep over {len(sweep_thresholds)} thresholds "
-            f"({sweep_thresholds[0]:.3f} .. {sweep_thresholds[-1]:.3f}) ..."
-        )
-        curves = evaluate_threshold_sweep(
-            subject_records=subject_records,
-            thresholds=sweep_thresholds,
-            connectivity=args.connectivity,
-            min_cluster_size=args.min_cluster_size,
-            box_dsc_threshold=args.box_dsc_threshold,
-            verbose=args.verbose,
-        )
+    print(
+        f"Running threshold sweep over {len(sweep_thresholds)} thresholds "
+        f"({sweep_thresholds[0]:.3f} .. {sweep_thresholds[-1]:.3f}) ..."
+    )
+    curves = evaluate_threshold_sweep(
+        subject_records=subject_records,
+        thresholds=sweep_thresholds,
+        connectivity=args.connectivity,
+        min_cluster_size=args.min_cluster_size,
+        box_dsc_threshold=args.box_dsc_threshold,
+        verbose=args.verbose,
+    )
 
     # ------------------------------------------------------------------ #
     # 6. Assemble and save results
@@ -3259,8 +2850,6 @@ def main() -> None:
             "treat_empty_gt_as_control": args.treat_empty_gt_as_control,
             "resample_to_gt": args.resample_to_gt,
             "pred_pattern": args.pred_pattern,
-            "nnunet_preds": args.nnunet_preds,
-            "test_set": args.test_set,
             "fold_split_json": str(args.fold_split_json) if args.fold_split_json else None,
             "fold_role": effective_fold_role,
             "gt_pattern": args.gt_pattern,
@@ -3268,13 +2857,10 @@ def main() -> None:
             "subjects_list": str(args.subjects_list) if args.subjects_list else None,
             "n_subjects_requested": len(required_subject_ids) if required_subject_ids is not None else None,
             "thresholds": sweep_thresholds,
-            "skip_threshold_sweep": args.skip_threshold_sweep,
             "n_bootstrap": args.n_bootstrap,
             "bootstrap_seed": args.bootstrap_seed,
             "ci_level": args.ci_level,
             "summary_stat": args.summary_stat,
-            "save_aggregate_niftis": args.save_aggregate_niftis,
-            "aggregate_nifti_dir": str(args.aggregate_nifti_dir) if args.aggregate_nifti_dir else None,
         },
         "inference_unit": "subject",
         "ci_method": "patient_bootstrap",
@@ -3290,17 +2876,14 @@ def main() -> None:
             "n_skipped": len(skipped),
         },
         "aggregate_fixed_threshold": agg,
-        "aggregate_niftis": aggregate_nifti_paths,
         "curves": curves,
-        "per_subject": per_subject_out if args.save_per_subject else [],
+        "per_subject": per_subject_out,
         "skipped": skipped,
         "warnings": warnings_list,
     }
 
     print_summary(results)
     save_json(results, args.out_json)
-    if args.out_subject_csv is not None:
-        save_subject_table(per_subject_out, args.out_subject_csv)
 
 
 if __name__ == "__main__":
