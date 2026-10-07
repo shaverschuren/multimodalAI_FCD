@@ -7,49 +7,21 @@ cross-validation checkpoint (or explicitly allowed mixed checkpoints).
 
 import argparse
 import json
+import platform
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any
 
-
-def _check_dependencies():
-    missing = []
-    try:
-        import numpy as _np  # noqa: F401
-    except ImportError:
-        missing.append("numpy")
-    try:
-        import pandas as _pd  # noqa: F401
-    except ImportError:
-        missing.append("pandas")
-    try:
-        import matplotlib.pyplot as _plt  # noqa: F401
-    except ImportError:
-        missing.append("matplotlib")
-    try:
-        import umap as _umap  # noqa: F401
-    except ImportError:
-        missing.append("umap-learn")
-    try:
-        from sklearn.preprocessing import StandardScaler as _SS  # noqa: F401
-    except ImportError:
-        missing.append("scikit-learn")
-
-    if missing:
-        joined = ", ".join(sorted(set(missing)))
-        raise ImportError(
-            "Missing required Python packages: "
-            f"{joined}. Install with: pip install {joined}"
-        )
-
-
-_check_dependencies()
-
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import umap
+from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
+from sklearn import __version__ as sklearn_version
 from sklearn.preprocessing import StandardScaler, normalize
+
+plt.rcParams["font.family"] = "Calibri"
 
 
 CANONICAL_LABELS = [
@@ -77,65 +49,57 @@ UMAP_COLOR_MAP = {
     "Unknown": "#9A9A9A",
 }
 
-LEGEND_FONT_SIZE = 8
-LEGEND_TITLE_FONT_SIZE = 8
-LEGEND_MARKER_SIZE = 7
+LEGEND_FONT_SIZE = 9
+LEGEND_TITLE_FONT_SIZE = 9
+LEGEND_MARKER_SIZE = 8
 
 
 def _normalize_anatomic_label(label: str) -> str:
-    s = str(label).strip()
-    if not s:
+    value = str(label).strip()
+    if not value or value.lower() in {"unknown", "nan", "none"}:
         return "Unknown"
 
-    s_low = s.lower()
-    if s_low in {"unknown", "nan", "none"}:
-        return "Unknown"
-
-    parts = s_low.split()
+    parts = value.lower().split()
     if len(parts) >= 2 and parts[0] in {"left", "right"}:
-        lat = parts[0].capitalize()
-        lobe = parts[1]
-        return f"{lat} {lobe}"
-
-    return s
+        return f"{parts[0].capitalize()} {parts[1]}"
+    return value
 
 
-def _load_artifact(npz_path: Path) -> Dict:
+def _load_artifact(npz_path: Path) -> dict[str, Any]:
     sidecar = npz_path.with_suffix(".json")
-    if not sidecar.exists():
-        raise FileNotFoundError(f"Missing sidecar JSON for feature file: {npz_path}")
+    with open(sidecar, "r", encoding="utf-8") as sidecar_file:
+        metadata = json.load(sidecar_file)
 
-    with open(sidecar, "r", encoding="utf-8") as f:
-        meta = json.load(f)
-
-    data = np.load(npz_path, allow_pickle=True)
-    return {"npz_path": npz_path, "meta_path": sidecar, "meta": meta, "data": data}
+    return {"npz_path": npz_path, "meta": metadata}
 
 
-def _decode_strings(arr):
-    out = np.asarray(arr)
-    if out.dtype.kind in {"S", "O"}:
-        return out.astype(str)
-    return out
+def _decode_strings(array: np.ndarray) -> np.ndarray:
+    values = np.asarray(array)
+    return values.astype(str) if values.dtype.kind in {"S", "O"} else values
 
 
-def _require_keys(data: np.lib.npyio.NpzFile, keys: List[str], source: Path):
+def _require_keys(
+    data: np.lib.npyio.NpzFile,
+    keys: list[str],
+    source: Path,
+) -> None:
     missing = [k for k in keys if k not in data]
     if missing:
         raise KeyError(f"Missing keys in {source}: {missing}")
 
 
-def _preprocess_features(X: np.ndarray, mode: str) -> np.ndarray:
+def _preprocess_features(features: np.ndarray, mode: str) -> np.ndarray:
+    """Apply the selected feature transform independently to a feature matrix."""
     if mode == "none":
-        return X
+        return features
     if mode == "l2":
-        return normalize(X, norm="l2")
+        return normalize(features, norm="l2")
     if mode == "standardize":
-        return StandardScaler().fit_transform(X)
+        return StandardScaler().fit_transform(features)
     raise ValueError(f"Unsupported preprocess mode: {mode}")
 
 
-def _compatibility_signature(meta: Dict) -> Tuple:
+def _compatibility_signature(meta: dict[str, Any]) -> tuple[Any, ...]:
     return (
         meta.get("feature_space_id"),
         meta.get("checkpoint_sha256"),
@@ -145,41 +109,26 @@ def _compatibility_signature(meta: Dict) -> Tuple:
     )
 
 
-def _build_label_palette(labels: List[str]) -> Dict[str, str]:
-    neutral = {
-        "Unknown": "#9e9e9e",
-        "Bilateral": "#616161",
-        "Multilobar": "#bdbdbd",
+def _build_anatomic_palette(labels: list[str]) -> dict[str, str]:
+    categories = dict.fromkeys(_normalize_anatomic_label(label) for label in labels)
+    return {
+        category: UMAP_COLOR_MAP.get(category, UMAP_COLOR_MAP["Unknown"])
+        for category in categories
     }
-    obs = list(dict.fromkeys(labels))
-
-    base_colors = plt.get_cmap("tab20").colors
-    canonical_present = [l for l in CANONICAL_LABELS if l in obs]
-    other_present = [l for l in obs if l not in canonical_present and l not in neutral]
-
-    palette = {}
-    idx = 0
-    for label in canonical_present + other_present:
-        palette[label] = base_colors[idx % len(base_colors)]
-        idx += 1
-    for label, color in neutral.items():
-        if label in obs:
-            palette[label] = color
-
-    return palette
 
 
-def _build_anatomic_palette(labels: List[str]) -> Dict[str, str]:
-    categories = list(dict.fromkeys([_normalize_anatomic_label(str(x)) for x in labels]))
-    palette = {}
-    for cat in categories:
-        palette[cat] = UMAP_COLOR_MAP.get(cat, UMAP_COLOR_MAP["Unknown"])
-    return palette
-
-
-def _scatter_by_category(ax, df: pd.DataFrame, xcol: str, ycol: str, ccol: str, palette: Dict[str, str],
-                         point_size: float, alpha: float, title: str):
-    categories = list(dict.fromkeys(df[ccol].astype(str).tolist()))
+def _scatter_by_category(
+    ax: Axes,
+    df: pd.DataFrame,
+    xcol: str,
+    ycol: str,
+    ccol: str,
+    palette: dict[str, str],
+    point_size: float,
+    alpha: float,
+    title: str,
+) -> None:
+    categories = df[ccol].astype(str).drop_duplicates()
     for cat in categories:
         sub = df[df[ccol].astype(str) == cat]
         ax.scatter(
@@ -197,16 +146,20 @@ def _scatter_by_category(ax, df: pd.DataFrame, xcol: str, ycol: str, ccol: str, 
 
 
 def _marker_for_anatomic_label(label: str) -> str:
-    l = _normalize_anatomic_label(str(label)).strip().lower()
-    if l.startswith("right "):
-        return "^"
-    if l.startswith("left "):
-        return "o"
-    return "o"
+    return "^" if _normalize_anatomic_label(label).lower().startswith("right ") else "o"
 
 
-def _scatter_patient_by_anatomy(ax, df: pd.DataFrame, xcol: str, ycol: str, ccol: str, palette: Dict[str, str],
-                                point_size: float, alpha: float, title: str):
+def _scatter_patient_by_anatomy(
+    ax: Axes,
+    df: pd.DataFrame,
+    xcol: str,
+    ycol: str,
+    ccol: str,
+    palette: dict[str, str],
+    point_size: float,
+    alpha: float,
+    title: str,
+) -> None:
     plot_labels = df[ccol].astype(str).map(_normalize_anatomic_label)
     categories = list(dict.fromkeys(plot_labels.tolist()))
     for cat in categories:
@@ -226,11 +179,6 @@ def _scatter_patient_by_anatomy(ax, df: pd.DataFrame, xcol: str, ycol: str, ccol
     ax.set_ylabel("UMAP 2")
 
 
-def _save_dataframe_csv(df: pd.DataFrame, path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False)
-
-
 def _normalize_hemisphere_label(label: str) -> str:
     s = str(label).strip().lower()
     if s in {"left", "l"}:
@@ -240,7 +188,7 @@ def _normalize_hemisphere_label(label: str) -> str:
     return "Unknown"
 
 
-def _ordered_anatomic_labels(labels: List[str]) -> List[str]:
+def _ordered_anatomic_labels(labels: list[str]) -> list[str]:
     desired = [
         "Left frontal", "Right frontal",
         "Left temporal", "Right temporal",
@@ -248,51 +196,49 @@ def _ordered_anatomic_labels(labels: List[str]) -> List[str]:
         "Left occipital", "Right occipital",
         "Unknown",
     ]
-    present = set([str(x) for x in labels])
+    present = {str(label) for label in labels}
     ordered = [lab for lab in desired if lab in present]
     extras = sorted([lab for lab in present if lab not in desired])
     return ordered + extras
 
 
-def _ordered_hemisphere_labels(labels: List[str]) -> List[str]:
+def _ordered_hemisphere_labels(labels: list[str]) -> list[str]:
     desired = ["Left", "Right", "Unknown"]
-    present = set([str(x) for x in labels])
+    present = {str(label) for label in labels}
     ordered = [lab for lab in desired if lab in present]
     extras = sorted([lab for lab in present if lab not in desired])
     return ordered + extras
 
 
-def _ordered_split_labels(labels: List[str]) -> List[str]:
+def _ordered_split_labels(labels: list[str]) -> list[str]:
     desired = ["train", "val", "validation", "test"]
-    present = set([str(x) for x in labels])
+    present = {str(label) for label in labels}
     ordered = [lab for lab in desired if lab in present]
     extras = sorted([lab for lab in present if lab not in desired])
     return ordered + extras
 
 
 def _legend_handles(
-    labels: List[str],
-    palette: Dict[str, str],
-    marker_by_label: Dict[str, str] = None,
-) -> List[Line2D]:
-    marker_by_label = marker_by_label or {}
-    handles = []
-    for label in labels:
-        handles.append(
-            Line2D(
-                [0],
-                [0],
-                marker=marker_by_label.get(label, "o"),
-                linestyle="",
-                markerfacecolor=palette.get(label, UMAP_COLOR_MAP["Unknown"]),
-                markeredgecolor="none",
-                markersize=LEGEND_MARKER_SIZE,
-            )
+    labels: list[str],
+    palette: dict[str, str],
+    marker_by_label: dict[str, str] | None = None,
+) -> list[Line2D]:
+    markers = marker_by_label or {}
+    return [
+        Line2D(
+            [0],
+            [0],
+            marker=markers.get(label, "o"),
+            linestyle="",
+            markerfacecolor=palette.get(label, UMAP_COLOR_MAP["Unknown"]),
+            markeredgecolor="none",
+            markersize=LEGEND_MARKER_SIZE,
         )
-    return handles
+        for label in labels
+    ]
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="UMAP analysis of EEG MIL exported features")
     parser.add_argument("--feature_dir", type=str, required=True)
     parser.add_argument("--feature_glob", type=str, default="features_*.npz")
@@ -313,6 +259,7 @@ def main():
     feature_dir = Path(args.feature_dir)
     output_dir = Path(args.output_dir)
 
+    # Sorting fixes the row order used to fit UMAP when a glob matches many files.
     files = sorted(feature_dir.glob(args.feature_glob))
     if not files:
         raise FileNotFoundError(f"No files matched {args.feature_glob!r} in {feature_dir}")
@@ -320,8 +267,7 @@ def main():
     artifacts = [_load_artifact(p) for p in files]
 
     signatures = [_compatibility_signature(a["meta"]) for a in artifacts]
-    unique_signatures = list({s for s in signatures})
-    mixed_spaces = len(unique_signatures) > 1
+    mixed_spaces = len(set(signatures)) > 1
 
     if mixed_spaces and not args.allow_mixed_feature_spaces:
         raise ValueError(
@@ -338,15 +284,15 @@ def main():
     pooled_features_list = []
     spike_rows = []
     pooled_rows = []
-    input_feature_space_ids = []
-    observed_labels = set()
+    input_feature_space_ids: list[str] = []
+    observed_labels: set[str] = set()
 
     for art in artifacts:
         npz_path = art["npz_path"]
         meta = art["meta"]
-        data = art["data"]
+        data = np.load(npz_path, allow_pickle=True)
 
-        input_feature_space_ids.append(meta.get("feature_space_id"))
+        input_feature_space_ids.append(str(meta.get("feature_space_id", "unknown")))
 
         _require_keys(
             data,
@@ -362,7 +308,6 @@ def main():
                 "pooled_subject_ids",
                 "pooled_fold",
                 "pooled_split",
-                "pooled_n_selected_spikes",
                 "pooled_combined_lobe_labels",
             ],
             npz_path,
@@ -391,10 +336,30 @@ def main():
         pooled_lobe = _decode_strings(data["pooled_lobe_label_names"]) if "pooled_lobe_label_names" in data else np.full(pooled_combined.shape, "Unknown")
         pooled_lat = _decode_strings(data["pooled_laterality_label_names"]) if "pooled_laterality_label_names" in data else np.full(pooled_combined.shape, "Unknown")
 
-        if spike_features.shape[0] != spike_subject_ids.shape[0]:
-            raise ValueError(f"Spike row mismatch in {npz_path}")
-        if pooled_features.shape[0] != pooled_subject_ids.shape[0]:
-            raise ValueError(f"Pooled row mismatch in {npz_path}")
+        spike_count = spike_features.shape[0]
+        pooled_count = pooled_features.shape[0]
+        spike_metadata = {
+            "subject IDs": spike_subject_ids,
+            "folds": spike_fold,
+            "splits": spike_split,
+            "original indices": spike_original_indices,
+            "bag positions": spike_bag_positions,
+            "anatomic labels": spike_combined,
+            "lobe labels": spike_lobe,
+            "laterality labels": spike_lat,
+        }
+        pooled_metadata = {
+            "subject IDs": pooled_subject_ids,
+            "folds": pooled_fold,
+            "splits": pooled_split,
+            "anatomic labels": pooled_combined,
+            "lobe labels": pooled_lobe,
+            "laterality labels": pooled_lat,
+        }
+        if any(values.shape[0] != spike_count for values in spike_metadata.values()):
+            raise ValueError(f"Spike features and metadata row counts differ in {npz_path}")
+        if any(values.shape[0] != pooled_count for values in pooled_metadata.values()):
+            raise ValueError(f"Pooled features and metadata row counts differ in {npz_path}")
 
         feature_space_id = str(meta.get("feature_space_id", "unknown"))
 
@@ -413,8 +378,9 @@ def main():
             for optional_key in ["spike_time", "spike_perception_score", "spike_channel"]:
                 if optional_key in data:
                     values = _decode_strings(data[optional_key])
-                    if values.shape[0] == spike_features.shape[0]:
-                        row[optional_key] = values[i]
+                    if values.shape[0] != spike_count:
+                        raise ValueError(f"{optional_key} row count differs from spike features in {npz_path}")
+                    row[optional_key] = values[i]
             spike_rows.append(row)
             observed_labels.add(row["combined_lobe_label"])
 
@@ -433,6 +399,10 @@ def main():
 
         spike_features_list.append(spike_features)
         pooled_features_list.append(pooled_features)
+        data.close()
+
+    if not spike_features_list or not pooled_features_list:
+        raise ValueError("Input artifacts contain no spike or pooled feature rows.")
 
     X_spike = np.concatenate(spike_features_list, axis=0)
     X_patient = np.concatenate(pooled_features_list, axis=0)
@@ -442,6 +412,8 @@ def main():
             f"Embedding dimensionality mismatch: spike D={X_spike.shape[1]}, patient D={X_patient.shape[1]}"
         )
 
+    # Each population is transformed and embedded independently; coordinates are
+    # descriptive and axes are not directly comparable between these two UMAPs.
     X_spike_p = _preprocess_features(X_spike, args.preprocess)
     X_patient_p = _preprocess_features(X_patient, args.preprocess)
 
@@ -598,6 +570,75 @@ def main():
     fig2.savefig(output_dir / "umap_patient_level.png", dpi=args.dpi)
     plt.close(fig2)
 
+    fig_grid = plt.figure(figsize=(18, 14))
+    grid_spec = fig_grid.add_gridspec(2, 4, hspace=0.3)
+    grid_axes = [
+        fig_grid.add_subplot(grid_spec[0, 0:2]),
+        fig_grid.add_subplot(grid_spec[0, 2:4]),
+        fig_grid.add_subplot(grid_spec[1, 1:3]),
+    ]
+    _scatter_by_category(
+        grid_axes[0],
+        spike_df,
+        "umap_1",
+        "umap_2",
+        "combined_lobe_label",
+        anatomic_palette,
+        point_size=8,
+        alpha=0.45,
+        title="",
+    )
+    grid_axes[0].legend(
+        legend_handles,
+        legend_labels,
+        loc="best",
+        fontsize=LEGEND_FONT_SIZE,
+        frameon=False,
+        title="Lobes by color family\nlight=left, dark=right",
+        title_fontsize=LEGEND_TITLE_FONT_SIZE,
+    )
+
+    _scatter_by_category(
+        grid_axes[1],
+        spike_df,
+        "umap_1",
+        "umap_2",
+        "hemisphere",
+        hemisphere_palette,
+        point_size=8,
+        alpha=0.45,
+        title="",
+    )
+    grid_axes[1].legend(
+        _legend_handles(hemi_labels, hemisphere_palette),
+        hemi_labels,
+        loc="best",
+        fontsize=LEGEND_FONT_SIZE,
+        frameon=False,
+    )
+
+    _scatter_patient_by_anatomy(
+        grid_axes[2],
+        patient_df,
+        "umap_1",
+        "umap_2",
+        "combined_lobe_label",
+        anatomic_palette,
+        point_size=48,
+        alpha=0.85,
+        title="",
+    )
+    grid_axes[2].legend(
+        _legend_handles(patient_labels, anatomic_palette, marker_by_label=patient_markers),
+        patient_labels,
+        loc="best",
+        fontsize=LEGEND_FONT_SIZE,
+        frameon=False,
+    )
+    fig_grid.tight_layout()
+    fig_grid.savefig(output_dir / "umap_grid.png", dpi=args.dpi)
+    plt.close(fig_grid)
+
     figc, axes = plt.subplots(1, 2, figsize=(16, 7), sharex=False, sharey=False)
     _scatter_by_category(
         axes[0], spike_df, "umap_1", "umap_2", "combined_lobe_label", anatomic_palette,
@@ -707,8 +748,8 @@ def main():
         "feature_space_id",
     ]
 
-    _save_dataframe_csv(spike_df[spike_csv_cols], output_dir / "umap_spike_coordinates.csv")
-    _save_dataframe_csv(patient_df[patient_csv_cols], output_dir / "umap_patient_coordinates.csv")
+    spike_df[spike_csv_cols].to_csv(output_dir / "umap_spike_coordinates.csv", index=False)
+    patient_df[patient_csv_cols].to_csv(output_dir / "umap_patient_coordinates.csv", index=False)
 
     observed = sorted(observed_labels)
     noncanonical = sorted([l for l in observed if l not in CANONICAL_LABELS])
@@ -720,11 +761,21 @@ def main():
         "number_of_spikes": int(spike_df.shape[0]),
         "embedding_dim": int(X_spike.shape[1]),
         "preprocessing": args.preprocess,
+        "preprocessing_scope": "fit independently to spike-level and patient-level features",
+        "embedding_scope": "fit independent UMAP models for spike-level and patient-level features",
         "umap_parameters": {
             "n_neighbors": args.umap_neighbors,
             "min_dist": args.umap_min_dist,
             "metric": args.umap_metric,
             "random_state": args.umap_random_state,
+        },
+        "software_versions": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "pandas": pd.__version__,
+            "matplotlib": matplotlib.__version__,
+            "umap-learn": umap.__version__,
+            "scikit-learn": sklearn_version,
         },
         "observed_labels": observed,
         "unknown_or_noncanonical_labels": noncanonical,

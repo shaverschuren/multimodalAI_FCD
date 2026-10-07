@@ -613,7 +613,7 @@ def _draw_difference_panel(
             ha="center",
             va="bottom",
             color="black",
-            fontsize=9,
+            fontsize=10,
             zorder=6,
             transform=marker_ax.transAxes,
         )
@@ -649,6 +649,14 @@ def _plot_comparison(
         if count_summary is not None:
             rate_values[(run, "n_fp_det_clusters")] = count_summary
 
+    plt.rcParams.update({
+        "font.family": "Calibri",
+        "font.size": 12,
+        "mathtext.fontset": "custom",
+        "mathtext.rm": "Calibri",
+        "mathtext.it": "Calibri:italic",
+        "mathtext.bf": "Calibri:bold",
+    })
     figure = plt.figure(figsize=(14, 6.5))
     grid = figure.add_gridspec(
         2,
@@ -664,11 +672,11 @@ def _plot_comparison(
         ],
         height_ratios=[1.5, 1.0],
         left=0.07,
-        right=0.97,
-        bottom=0.07,
-        top=0.91,
+        right=0.94,
+        bottom=0.06,
+        top=0.955,
         wspace=0.0,
-        hspace=0.08,
+        hspace=0.20,
     )
     axes = np.empty((2, 4), dtype=object)
     for row in range(2):
@@ -684,7 +692,7 @@ def _plot_comparison(
         run_order,
         ["voxel_precision", "voxel_recall", "voxel_dice"],
         (0.0, 1.0),
-        ylabel="Mean score",
+        ylabel=r"Score/rate [0 — 1]",
     )
     _draw_bar_panel(
         axes[0, 1],
@@ -713,7 +721,7 @@ def _plot_comparison(
         "detection_rate",
         "pinpointing_rate",
     ]
-    _draw_bar_panel(subject_ax, rate_values, run_order, rate_metrics, (0.0, 1.0), ylabel="Rate")
+    _draw_bar_panel(subject_ax, rate_values, run_order, rate_metrics, (0.0, 1.0))
 
     count_x = float(len(rate_metrics) - 1) + DIFF_CATEGORY_SPACING
     subject_ax.axvline(
@@ -754,7 +762,7 @@ def _plot_comparison(
     count_ax.set_xlim(subject_ax.get_xlim())
     count_ax.set_ylim(0.0, 5.0)
     count_ax.set_yticks(np.arange(0, 6, 1))
-    count_ax.set_ylabel("FP clusters per case")
+    count_ax.set_ylabel("Number of FP clusters [n]")
     count_ax.patch.set_alpha(0.0)
     count_ax.grid(False)
 
@@ -764,7 +772,7 @@ def _plot_comparison(
         comparisons,
         ["voxel_precision", "voxel_recall", "voxel_dice"],
         RANDOM_SEED + 30,
-        ylabel="Multimodal - MRI",
+        ylabel=r"Paired difference [-1 — 1]",
     )
 
     _draw_difference_panel(
@@ -819,8 +827,20 @@ def _plot_comparison(
         )
     for axis in axes[:, 0]:
         axis.tick_params(axis="y", which="major", left=True, labelleft=True, length=3)
+    category_labels = [
+        ["Precision", "Recall", "DSC"],
+        ["Precision", "Recall", r"$F_1$"],
+        ["Precision", "Recall", r"$F_1$"],
+        ["Detection", "Pinpointing", "n FP clusters"],
+    ]
+    for row_axes in axes:
+        for column, axis in enumerate(row_axes):
+            positions = [0.0, 1.0, count_x] if column == 3 else [0.0, 1.0, 2.0]
+            axis.set_xticks(positions, labels=category_labels[column])
+            axis.tick_params(axis="x", labelbottom=True, bottom=False, labelsize=12, pad=5)
     count_ax.tick_params(axis="y", which="major", right=True, labelright=True, length=3)
     if difference_count_ax is not None:
+        difference_count_ax.set_ylabel("Paired difference [n]")
         difference_count_ax.tick_params(
             axis="y", which="major", right=True, labelright=True, length=3
         )
@@ -829,16 +849,16 @@ def _plot_comparison(
         Patch(facecolor=MRI_COLOR, edgecolor=NEUTRAL_COLOR, label="MRI"),
         Patch(facecolor=MULTIMODAL_COLOR, edgecolor=NEUTRAL_COLOR, label="Multimodal"),
     ]
-    figure.legend(handles=legend, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.97))
-    figure.text(
-        0.5,
-        0.025,
-        "Bars: mean with 95% patient-bootstrap CI. Paired differences: multimodal - MRI; "
-        "points are subjects, error bars are 95% bootstrap CIs, stars use unadjusted sign-flip tests.",
-        ha="center",
-        va="bottom",
-        fontsize=9,
-    )
+    axes[0, 0].legend(handles=legend, loc="upper left", ncol=1, frameon=False)
+    # figure.text(
+    #     0.5,
+    #     0.025,
+    #     "Bars: mean with 95% patient-bootstrap CI. Paired differences: multimodal - MRI; "
+    #     "points are subjects, error bars are 95% bootstrap CIs, stars use unadjusted sign-flip tests.",
+    #     ha="center",
+    #     va="bottom",
+    #     fontsize=10,
+    # )
     figure.savefig(output_path, dpi=600)
     plt.close(figure)
 
@@ -877,7 +897,7 @@ def run_comparison(mri_json: Path, multimodal_json: Path, output_dir: Path) -> N
     output_dir.mkdir(parents=True, exist_ok=True)
     comparison_path = output_dir / "paired_method_comparison.csv"
     summary_path = output_dir / "summary_patient_bootstrap.csv"
-    figure_path = output_dir / "mri_vs_multimodal_comparison.png"
+    figure_path = output_dir / "mri_vs_multimodal_comparison.pdf"
     comparisons.to_csv(comparison_path, index=False)
     summary.to_csv(summary_path, index=False)
     _plot_comparison(subjects, joined, comparisons, figure_path)
