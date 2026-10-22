@@ -3,7 +3,9 @@
 The script writes patient-level bootstrap summaries, paired-comparison results,
 and one publication figure. Continuous paired outcomes use sign-flip permutation
 tests; binary outcomes also report an exact binomial sign test. Permutation
-p-values are reported and shown without multiplicity correction.
+p-values are reported both unadjusted and Holm-adjusted across all tested metrics.
+Significance uses Holm correction by default; --no-holm uses unadjusted p-values.
+Bootstrap confidence intervals and supplementary binomial tests are not adjusted.
 
 Usage:
     python evaluate/plot_evaluate_maps_results.py --mri-json MRI.json \\
@@ -251,7 +253,21 @@ def _patient_bootstrap_summary(subjects: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _paired_comparison(joined: pd.DataFrame, baseline: str, comparator: str) -> pd.DataFrame:
+def _holm_pvalues(p_values: np.ndarray) -> np.ndarray:
+    p_values = np.asarray(p_values, dtype=float)
+    adjusted = np.full(p_values.shape, np.nan)
+    valid_indices = np.flatnonzero(np.isfinite(p_values))
+    order = valid_indices[np.argsort(p_values[valid_indices])]
+    adjusted[order] = np.minimum(
+        1.0,
+        np.maximum.accumulate(p_values[order] * np.arange(order.size, 0, -1)),
+    )
+    return adjusted
+
+
+def _paired_comparison(
+    joined: pd.DataFrame, baseline: str, comparator: str, use_holm: bool = True
+) -> pd.DataFrame:
     continuous_metrics = [
         "voxel_precision",
         "voxel_recall",
@@ -334,7 +350,12 @@ def _paired_comparison(joined: pd.DataFrame, baseline: str, comparator: str) -> 
             }
         )
 
-    return pd.DataFrame(rows)
+    comparisons = pd.DataFrame(rows)
+    p_values = comparisons.get("p_value_signflip_mean", pd.Series(dtype=float)).to_numpy(dtype=float)
+    comparisons["p_value_holm"] = _holm_pvalues(p_values)
+    active_p_values = comparisons["p_value_holm"].to_numpy() if use_holm else p_values
+    comparisons["significant"] = np.isfinite(active_p_values) & (active_p_values < 0.05)
+    return comparisons
 
 
 def _mean_summary(values: np.ndarray, seed: int) -> Optional[Tuple[float, float, float]]:
@@ -487,6 +508,7 @@ def _draw_difference_panel(
     seed: int,
     secondary_metrics: Sequence[str] = (),
     ylabel: Optional[str] = None,
+    use_holm: bool = True,
 ) -> Optional[plt.Axes]:
     secondary = set(secondary_metrics)
     primary_order = [metric for metric in metrics if metric not in secondary]
@@ -539,8 +561,9 @@ def _draw_difference_panel(
             zorder=4,
         )
 
-        p_value = comparison_by_metric.loc[metric, "p_value_signflip_mean"]
-        if pd.notna(p_value) and float(p_value) < 0.05:
+        p_column = "p_value_holm" if use_holm else "p_value_signflip_mean"
+        p_value = comparison_by_metric.loc[metric, p_column]
+        if np.isfinite(p_value) and float(p_value) < 0.05:
             stars = _p_to_stars(float(p_value))
             significance_markers.append((target_ax, x, float(ci[1]), stars))
 
@@ -625,6 +648,7 @@ def _plot_comparison(
     joined: pd.DataFrame,
     comparisons: pd.DataFrame,
     output_path: Path,
+    use_holm: bool = True,
 ) -> None:
     run_order = list(subjects["run"].drop_duplicates())
     summaries = _bar_summaries(subjects[~subjects["is_control"]], run_order)
@@ -773,6 +797,7 @@ def _plot_comparison(
         ["voxel_precision", "voxel_recall", "voxel_dice"],
         RANDOM_SEED + 30,
         ylabel=r"Paired difference [-1 — 1]",
+        use_holm=use_holm,
     )
 
     _draw_difference_panel(
@@ -785,6 +810,7 @@ def _plot_comparison(
             "cluster_det_f1",
         ],
         RANDOM_SEED + 31,
+        use_holm=use_holm,
     )
 
     _draw_difference_panel(
@@ -797,6 +823,7 @@ def _plot_comparison(
             "cluster_pin_f1",
         ],
         RANDOM_SEED + 32,
+        use_holm=use_holm,
     )
 
     difference_count_ax = _draw_difference_panel(
@@ -810,6 +837,7 @@ def _plot_comparison(
         ],
         RANDOM_SEED + 33,
         secondary_metrics=("n_fp_det_clusters",),
+        use_holm=use_holm,
     )
 
     for axis in figure.axes:
@@ -854,7 +882,8 @@ def _plot_comparison(
     #     0.5,
     #     0.025,
     #     "Bars: mean with 95% patient-bootstrap CI. Paired differences: multimodal - MRI; "
-    #     "points are subjects, error bars are 95% bootstrap CIs, stars use unadjusted sign-flip tests.",
+    #     "points are subjects, error bars are unadjusted 95% bootstrap CIs; "
+    #     "stars use Holm-adjusted sign-flip tests by default (--no-holm disables correction).",
     #     ha="center",
     #     va="bottom",
     #     fontsize=10,
@@ -863,7 +892,9 @@ def _plot_comparison(
     plt.close(figure)
 
 
-def run_comparison(mri_json: Path, multimodal_json: Path, output_dir: Path) -> None:
+def run_comparison(
+    mri_json: Path, multimodal_json: Path, output_dir: Path, use_holm: bool = True
+) -> None:
     mri_name = mri_json.stem
     multimodal_name = multimodal_json.stem
     mri_subjects = _load_subject_rows(mri_json, mri_name)
@@ -891,7 +922,7 @@ def run_comparison(mri_json: Path, multimodal_json: Path, output_dir: Path) -> N
     if not joined.empty and (joined["is_control_a"] != joined["is_control_b"]).any():
         raise ValueError("MRI and multimodal inputs disagree on control status for a subject.")
 
-    comparisons = _paired_comparison(joined, mri_name, multimodal_name)
+    comparisons = _paired_comparison(joined, mri_name, multimodal_name, use_holm=use_holm)
     summary = _patient_bootstrap_summary(subjects)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -900,8 +931,14 @@ def run_comparison(mri_json: Path, multimodal_json: Path, output_dir: Path) -> N
     figure_path = output_dir / "mri_vs_multimodal_comparison.pdf"
     comparisons.to_csv(comparison_path, index=False)
     summary.to_csv(summary_path, index=False)
-    _plot_comparison(subjects, joined, comparisons, figure_path)
+    _plot_comparison(subjects, joined, comparisons, figure_path, use_holm=use_holm)
 
+    n_valid = int(comparisons["p_value_holm"].notna().sum())
+    print(
+        f"Holm correction: {'enabled' if use_holm else 'disabled'}; "
+        f"hypotheses corrected: {n_valid if use_holm else 0} ({n_valid} valid); "
+        f"significant comparisons (p < 0.05): {int(comparisons['significant'].sum())}"
+    )
     print(f"Saved: {comparison_path}")
     print(f"Saved: {summary_path}")
     print(f"Saved: {figure_path}")
@@ -914,8 +951,12 @@ def main() -> None:
     parser.add_argument("--mri-json", required=True, type=Path)
     parser.add_argument("--multimodal-json", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--no-holm", action="store_true",
+        help="Use unadjusted sign-flip p-values for significance instead of Holm correction.",
+    )
     args = parser.parse_args()
-    run_comparison(args.mri_json, args.multimodal_json, args.output_dir)
+    run_comparison(args.mri_json, args.multimodal_json, args.output_dir, use_holm=not args.no_holm)
 
 
 if __name__ == "__main__":
