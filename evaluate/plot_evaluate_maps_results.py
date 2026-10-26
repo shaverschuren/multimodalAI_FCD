@@ -740,6 +740,19 @@ def _plot_comparison(
         ],
         (0.0, 1.0),
     )
+    for axis, label in zip(axes[0, 1:3], ("Detection", "Pinpointing")):
+        axis.text(
+            0.5,
+            0.98,
+            label,
+            transform=axis.transAxes,
+            ha="center",
+            va="top",
+            fontname="Calibri",
+            fontweight="bold",
+            bbox={"facecolor": "white", "edgecolor": "none", "pad": 2.0},
+            zorder=5,
+        )
     subject_ax = axes[0, 3]
     rate_metrics = [
         "detection_rate",
