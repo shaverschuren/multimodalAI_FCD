@@ -286,5 +286,5 @@ if __name__ == "__main__":
     with torch.no_grad():
         y = model(x)
     print("Output shape:", y.shape)  # expect [2, 2, 128, 128, 128]
-    # print(model.encoder)
-    print(model.decoder)  
+    print("Total parameters:", sum(p.numel() for p in model.parameters()))
+    print("Trainable parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))

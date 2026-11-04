@@ -5,8 +5,7 @@ function conversion_table = convert_trc_to_edf_raw(input_path, output_path, vara
 %
 %   This is a minimal TRC -> EDF converter intended for a raw
 %   BIDS conversion workflow. One input .trc file becomes one output .edf
-%   file. The converter DOES NOT concatenate recordings, resample, filter,
-%   rereference, remove bad channels, or interpolate channels.
+%   file. So this converter doesn't concatenate etc. like our other one.
 %   Assumes that the parent folder of each TRC file is the patient id.
 %
 %   Required:
@@ -39,7 +38,7 @@ function conversion_table = convert_trc_to_edf_raw(input_path, output_path, vara
 %   Notes:
 %     - EDF is written in physical units using MATLAB's edfwrite.
 %     - For BIDS, create the final BIDS sidecars separately from the output EDFs.
-%       The TSV written here is only a conversion/provenance log.
+%       The TSV written here is only a conversion log and no BIDS sidecar.
 %
 
 % ------------------------------

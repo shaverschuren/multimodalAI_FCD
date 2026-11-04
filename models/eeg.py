@@ -32,7 +32,7 @@ CHANNEL_ORDER = [
 ]
 # Standard channel positions for GNN adjacency
 _script_dir = os.path.dirname(os.path.abspath(__file__))
-_coord_file = os.path.join(_script_dir, "..", "..", "preprocessing", "eeg", "standard_1005_mni_coordinates.json")
+_coord_file = os.path.join(_script_dir, "..", "preprocessing", "eeg", "standard_1005_mni_coordinates.json")
 with open(_coord_file, "r") as f:
     coord_data = json.load(f)
     CHANNEL_MNI_COORDS = {
@@ -1804,3 +1804,7 @@ if __name__ == "__main__":
     assert embeddings.shape == (B, 64), f"Expected (B, 64), got {embeddings.shape}"
     assert subject_logits is None, "Expected None when use_subject_adversary=False"
     print("SpikeEncoderPretrainModel smoke test passed")
+
+    # Parameter count
+    print("Total parameters:", sum(p.numel() for p in model_multihead.parameters()))
+    print("Trainable parameters:", sum(p.numel() for p in model_multihead.parameters() if p.requires_grad))
