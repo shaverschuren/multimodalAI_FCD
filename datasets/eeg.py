@@ -8,6 +8,7 @@ EEG MIL training scripts.
 
 import json
 import os
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -77,7 +78,7 @@ def load_labels(
     multi_label: bool = True,
 ) -> Dict[str, torch.Tensor]:
     """
-    Load a label dictionary from a JSON file.
+    Load a label dictionary from a JSON file, matching label names case-insensitively.
 
     Supports two formats:
       - dict  e.g. {"left_frontal": 0.9, "left_temporal": 0.1}  -> soft distribution
@@ -97,33 +98,45 @@ def load_labels(
     with open(json_path, "r") as f:
         raw = json.load(f)
 
+    normalized_mapping = {name.casefold(): index for name, index in label_to_int.items()}
+    unknown_labels = set()
     label_dict: Dict[str, torch.Tensor] = {}
 
     for pid, entry in raw.items():
+        names = entry.keys() if isinstance(entry, dict) else [entry]
+        unknown_labels.update(name for name in names if name.casefold() not in normalized_mapping)
         if multi_label:
             vec = torch.zeros(num_classes, dtype=torch.float32)
             if isinstance(entry, dict):
                 total = 0.0
                 for name, prob in entry.items():
-                    if name in label_to_int:
+                    normalized_name = name.casefold()
+                    if normalized_name in normalized_mapping:
                         p = float(prob)
-                        vec[label_to_int[name]] += p
+                        vec[normalized_mapping[normalized_name]] += p
                         total += p
                 if total > 0:
                     vec /= total
             else:
-                if entry in label_to_int:
-                    vec[label_to_int[entry]] = 1.0
+                if entry.casefold() in normalized_mapping:
+                    vec[normalized_mapping[entry.casefold()]] = 1.0
             label_dict[pid] = vec
         else:
             if isinstance(entry, dict):
                 best = max(entry.items(), key=lambda kv: kv[1])[0]
-                if best in label_to_int:
-                    label_dict[pid] = int(label_to_int[best])
+                if best.casefold() in normalized_mapping:
+                    label_dict[pid] = int(normalized_mapping[best.casefold()])
             else:
-                if entry in label_to_int:
-                    label_dict[pid] = int(label_to_int[entry])
+                if entry.casefold() in normalized_mapping:
+                    label_dict[pid] = int(normalized_mapping[entry.casefold()])
 
+    if unknown_labels:
+        warnings.warn(
+            f"Unrecognized labels in {json_path}: {sorted(unknown_labels)}; "
+            "their weights are ignored and remaining soft-label weights are renormalized.",
+            UserWarning,
+            stacklevel=2,
+        )
     return label_dict
 
 
