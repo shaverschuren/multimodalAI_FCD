@@ -47,7 +47,7 @@ def create_channel_labels(ground_truth_path, sensitivity_map_dir, output_dir, pa
         # Resample ground truth to match sensitivity map affine and shape (only if needed, store result back in gt_data for next iterations)
         if not np.allclose(gt_affine, sens_affine) or gt_data.shape != sens_data.shape:
             # Resample ground truth to match sensitivity map
-            transform_matrix = np.linalg.inv(sens_affine) @ gt_affine
+            transform_matrix = np.linalg.inv(gt_affine) @ sens_affine
             gt_data = affine_transform(gt_data, transform_matrix[:3, :3], 
                                offset=transform_matrix[:3, 3], 
                                output_shape=sens_data.shape)
