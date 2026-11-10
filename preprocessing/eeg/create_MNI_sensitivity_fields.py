@@ -26,7 +26,7 @@ def load_mni_brain(template_path):
     data = img.get_fdata()
     return data, img.affine
 
-def create_sensitivity_map(electrode_coords, mni_brain, affine, kernel_size=10):
+def create_sensitivity_map(electrode_coords, mni_brain, affine, kernel_size=15):
     """
     Create a sensitivity map for each electrode based on its spatial distribution.
     The electrode sensitivity is modeled as a Gaussian kernel.
@@ -89,7 +89,7 @@ def main():
     mni_brain, affine = load_mni_brain(mni_template_path)
 
     # Create and save sensitivity maps
-    sensitivity_maps = create_sensitivity_map(electrode_data['data'], mni_brain, affine, kernel_size=10)
+    sensitivity_maps = create_sensitivity_map(electrode_data['data'], mni_brain, affine, kernel_size=15)
     
     for electrode, sensitivity_map in tqdm(sensitivity_maps.items(), desc="Saving sensitivity maps"):
         output_filename = os.path.join(output_dir, f'sensitivity_map_MNI_{electrode}.nii.gz')
