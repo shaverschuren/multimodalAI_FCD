@@ -20,6 +20,9 @@ TODO:
     Consider adding skip connections between temporal and spatial mixing layers?
   - Explore possibility of predicting both per-channel "weight" as a "distance" output
     to capture stuff like morphology that says something about the depth.
+New:
+Input: (batch, spikes, 21 channels, 128 samples)
+Output: (batch, 21, 3) joint probabilities, summing to one.
 """
 
 import torch
@@ -31,8 +34,7 @@ class MultiScaleBlock(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.convs = nn.ModuleList([
-            nn.Conv1d(in_ch, 16, k, padding=k // 2)
-            for k in (3, 7, 15)
+            nn.Conv1d(in_ch, 16, k, padding=k // 2) for k in (3, 7, 15)
         ])
         self.pool = nn.Sequential(
             nn.MaxPool1d(3, stride=1, padding=1),
@@ -47,7 +49,7 @@ class MultiScaleBlock(nn.Module):
 
 
 class TemporalEncoder_v2(nn.Module):
-    """Shared per-channel 1D CNN; collapses time to one 32D vector per channel."""
+    """Shared per-channel 1D CNN; one 32D feature vector per channel."""
 
     def __init__(self):
         super().__init__()
@@ -57,18 +59,16 @@ class TemporalEncoder_v2(nn.Module):
         self.down = nn.MaxPool1d(2)
 
     def forward(self, x):
-        # x: (batch*spikes, 21, 128)
         batch, channels, samples = x.shape
         h = self.stem(x.reshape(batch * channels, 1, samples))
-        h = self.down(self.ms1(h))  # 128 -> 64
-        h = self.down(self.ms2(h))  # 64 -> 32
-        h = h.mean(dim=-1)          # Global temporal average pooling
-        h = h.reshape(batch, channels, 32)
-        return h
+        h = self.down(self.ms1(h))
+        h = self.down(self.ms2(h))
+        h = h.mean(dim=-1)
+        return h.reshape(batch, channels, 32)
 
 
 class PairwiseSpatialMixer(nn.Module):
-    """Learn pairwise channel interactions from time-collapsed features. No time-resolved interactions yet..."""
+    """Learn pairwise channel interactions from time-collapsed features."""
 
     def __init__(self):
         super().__init__()
@@ -76,23 +76,21 @@ class PairwiseSpatialMixer(nn.Module):
         self.right = nn.Linear(32, 12)
         self.channel_embed = nn.Parameter(torch.zeros(21, 12))
         self.pair = nn.Sequential(nn.Linear(144, 24), nn.GELU())
-        self.mix = nn.Sequential(nn.Linear(80, 32), nn.GELU(),
-                                nn.Dropout(0.2))
+        self.mix = nn.Sequential(nn.Linear(80, 32), nn.GELU(), nn.Dropout(0.2))
         self.norm = nn.LayerNorm(32)
 
     def forward(self, h):
-        # h: (batch*spikes, 21, 32)
         a = self.left(h) + self.channel_embed[None]
         b = self.right(h) + self.channel_embed[None]
         pairs = torch.einsum('bid,bje->bijde', a, b).flatten(-2)
-        pairs = self.pair(pairs)  # (batch*spikes, 21, 21, 16)
+        pairs = self.pair(pairs)
         row = pairs.mean(dim=2)
         col = pairs.mean(dim=1)
         return self.norm(h + self.mix(torch.cat([h, row, col], dim=-1)))
 
 
 class MLPSpatialMixer(nn.Module):
-    """Shallow global channel mixing, matched in capacity to pairwise mixer."""
+    """Shallow global channel mixing, matched to the pairwise mixer."""
 
     def __init__(self):
         super().__init__()
@@ -103,7 +101,6 @@ class MLPSpatialMixer(nn.Module):
         self.norm = nn.LayerNorm(32)
 
     def forward(self, h):
-        # h: (batch*spikes, 21, 32)
         mixed = self.channel_mlp(h.transpose(1, 2)).transpose(1, 2)
         return self.norm(h + self.feature_mlp(mixed))
 
@@ -124,13 +121,14 @@ class SpikeEncoder_v2(nn.Module):
 
 
 class SpikeMILModel_v2(nn.Module):
-    """Masked-mean MIL with a shared per-channel prediction head."""
+    """Masked-mean MIL with a shared 3-bin head per electrode."""
 
-    def __init__(self, spatial_mixing='pairwise'):
+    def __init__(self, spatial_mixing='pairwise', num_bins=3):
         super().__init__()
+        self.num_bins = num_bins
         self.encoder = SpikeEncoder_v2(spatial_mixing=spatial_mixing)
         self.head = nn.Sequential(nn.Linear(32, 32), nn.GELU(),
-                                  nn.Dropout(0.2), nn.Linear(32, 1))
+                                  nn.Dropout(0.2), nn.Linear(32, num_bins))
 
     def forward(self, x, mask=None):
         batch, spikes, channels, samples = x.shape
@@ -141,5 +139,5 @@ class SpikeMILModel_v2(nn.Module):
         else:
             valid = mask[:, :, None, None].to(h.dtype)
             h = (h * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
-        logits = self.head(h).squeeze(-1)
-        return torch.softmax(logits, dim=-1)
+        logits = self.head(h)  # (B, 21, 3)
+        return logits.flatten(1).softmax(dim=1).reshape_as(logits)
