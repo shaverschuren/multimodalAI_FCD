@@ -52,6 +52,269 @@ CHANNEL_LABEL_TO_INT: Dict[str, int] = {
     "O1": 19,  "O2": 20,
 }
 
+DEPTH_BIN_NAMES = ("superficial", "intermediate", "deep")
+DEPTH_BOUNDARIES_MM = (10.0, 25.0)
+DEPTH_TRANSITION_MM = 3.0
+DISTANCE_BIN_NAMES = ("near", "intermediate", "far")
+DISTANCE_BOUNDARIES_MM = (50.0, 85.0)
+DISTANCE_TRANSITION_MM = 5.0
+BRAIN_MASK_CLOSING_RADIUS_MM = 5.0
+MAX_ELECTRODE_TO_BRAIN_MM = 60.0
+
+
+def load_brain_template(template_path):
+    import nibabel as nib
+    from scipy.ndimage import binary_closing, binary_fill_holes
+
+    image = nib.load(str(template_path))
+    if len(image.shape) != 3:
+        raise ValueError(f"Expected a 3D MNI template, got shape {image.shape}.")
+    spatial_unit, _ = image.header.get_xyzt_units()
+    _, sform_code = image.header.get_sform(coded=True)
+    if spatial_unit != "mm" or int(sform_code) != 4:
+        raise ValueError(
+            "Expected an MNI152 template in millimetres with an MNI sform; "
+            f"got units={spatial_unit!r}, sform_code={int(sform_code)}."
+        )
+    brain_mask = image.get_fdata(dtype=np.float32) > 0
+    if not brain_mask.any():
+        raise ValueError(f"Brain template is empty: {template_path}")
+    spacing = nib.affines.voxel_sizes(image.affine)
+    extent = np.ceil(BRAIN_MASK_CLOSING_RADIUS_MM / spacing).astype(int)
+    offsets = np.ogrid[tuple(slice(-size, size + 1) for size in extent)]
+    footprint = sum((offset * step) ** 2 for offset, step in zip(offsets, spacing))
+    structure = footprint <= BRAIN_MASK_CLOSING_RADIUS_MM ** 2
+    brain_mask = binary_closing(brain_mask, structure=structure)
+    brain_mask = binary_fill_holes(brain_mask)
+    return image, brain_mask
+
+
+def assert_same_grid(image, reference, label="image"):
+    if image.shape[:3] != reference.shape[:3] or not np.allclose(
+        image.affine, reference.affine, atol=1e-5
+    ):
+        raise ValueError(f"{label} shape/affine does not match the MNI reference grid.")
+    spatial_unit, _ = image.header.get_xyzt_units()
+    if spatial_unit not in ("mm", "unknown"):
+        raise ValueError(f"{label} has unsupported spatial units {spatial_unit!r}.")
+
+
+def resolve_sensitivity_maps(sensitivity_dir, channels):
+    prefix, suffix = "sensitivity_map_MNI_", ".nii.gz"
+    paths = {}
+    for path in Path(sensitivity_dir).glob(f"{prefix}*{suffix}"):
+        name = path.name[len(prefix):-len(suffix)]
+        key = name.casefold()
+        if key in paths:
+            raise ValueError(f"Duplicate sensitivity maps for channel {name!r}.")
+        paths[key] = path
+    resolved = {}
+    missing = []
+    for channel in channels:
+        path = paths.get(channel.casefold())
+        if path is None:
+            missing.append(channel)
+        else:
+            resolved[channel] = path
+    if missing:
+        raise FileNotFoundError(
+            f"Missing sensitivity maps for channels: {', '.join(missing)}"
+        )
+    return resolved
+
+
+def validate_electrode_coordinates(electrode_coords, brain_mask, affine, header):
+    """Check scalp coordinates against template units, bounds, side and brain."""
+    import nibabel as nib
+    from scipy.ndimage import distance_transform_edt
+
+    spatial_unit, _ = header.get_xyzt_units()
+    if spatial_unit != "mm":
+        raise ValueError(f"Expected template coordinates in millimetres, got {spatial_unit!r}.")
+    voxel_sizes = nib.affines.voxel_sizes(affine)
+    brain_distance = distance_transform_edt(~np.asarray(brain_mask, dtype=bool), sampling=voxel_sizes)
+    inverse_affine = np.linalg.inv(affine)
+    for channel in CHANNEL_LABEL_TO_INT:
+        if channel not in electrode_coords:
+            raise ValueError(f"Missing scalp coordinate for required channel {channel}.")
+        xyz = np.array([electrode_coords[channel][axis] for axis in "xyz"], dtype=float)
+        if not np.isfinite(xyz).all():
+            raise ValueError(f"Non-finite scalp coordinate for {channel}: {xyz}.")
+        expected_x_sign = -1 if channel[-1:] in "13579" else 1 if channel[-1:] in "02468" else 0
+        if expected_x_sign and xyz[0] * expected_x_sign <= 0:
+            raise ValueError(f"{channel} has unexpected x={xyz[0]:.1f} mm; check coordinate orientation.")
+        if not expected_x_sign and abs(xyz[0]) > 5:
+            raise ValueError(f"Midline channel {channel} has unexpected x={xyz[0]:.1f} mm.")
+        voxel = np.rint(nib.affines.apply_affine(inverse_affine, xyz)).astype(int)
+        if np.any(voxel < 0) or np.any(voxel >= np.asarray(brain_mask.shape)):
+            raise ValueError(f"{channel} coordinate lies outside the MNI template: {xyz.tolist()} mm.")
+        distance_mm = brain_distance[tuple(voxel)]
+        if distance_mm > MAX_ELECTRODE_TO_BRAIN_MM:
+            raise ValueError(
+                f"{channel} is {distance_mm:.1f} mm from the template brain; "
+                "coordinate frame may not match the MNI template."
+            )
+
+
+def smooth_distance_bin_weights(distance_mm, brain_mask, boundaries_mm, transition_mm):
+    """Return three non-negative logistic distance-bin weights."""
+    from scipy.special import expit
+
+    if len(boundaries_mm) != 2 or transition_mm <= 0:
+        raise ValueError("Three distance bins require two boundaries and positive transition width.")
+    brain_mask = np.asarray(brain_mask, dtype=bool)
+    distance_mm = np.asarray(distance_mm, dtype=np.float32)
+    if distance_mm.shape != brain_mask.shape:
+        raise ValueError("Distance map and brain mask shapes must match.")
+    first = expit((distance_mm - boundaries_mm[0]) / transition_mm)
+    second = expit((distance_mm - boundaries_mm[1]) / transition_mm)
+    bins = np.stack((1.0 - first, first - second, second)).astype(np.float32)
+    bins[:, ~brain_mask] = 0.0
+    if np.any(bins[:, brain_mask] < 0) or not np.allclose(
+        bins[:, brain_mask].sum(axis=0), 1.0, atol=1e-6
+    ):
+        raise ValueError("Soft distance-bin weights must be non-negative and sum to one in brain.")
+    return bins
+
+
+def electrode_to_voxel_distance_mm(electrode_coord, shape, affine, slab_depth=8):
+    """Compute physical Euclidean distance using the affine, slab by slab."""
+    coordinate = np.asarray([electrode_coord[axis] for axis in "xyz"], dtype=np.float32)
+    if coordinate.shape != (3,) or not np.isfinite(coordinate).all():
+        raise ValueError(f"Invalid electrode coordinate: {electrode_coord}.")
+    distance_mm = np.empty(shape, dtype=np.float32)
+    x = np.arange(shape[0], dtype=np.float32)[:, None, None]
+    y = np.arange(shape[1], dtype=np.float32)[None, :, None]
+    for z0 in range(0, shape[2], slab_depth):
+        z1 = min(z0 + slab_depth, shape[2])
+        z = np.arange(z0, z1, dtype=np.float32)[None, None, :]
+        squared_distance = np.zeros((shape[0], shape[1], z1 - z0), dtype=np.float32)
+        for world_axis in range(3):
+            world = (affine[world_axis, 0] * x + affine[world_axis, 1] * y
+                     + affine[world_axis, 2] * z + affine[world_axis, 3])
+            squared_distance += (world - coordinate[world_axis]) ** 2
+        distance_mm[:, :, z0:z1] = np.sqrt(squared_distance)
+    return distance_mm
+
+
+def compute_electrode_distance_bins(electrode_coord, brain_mask, affine):
+    distance_mm = electrode_to_voxel_distance_mm(
+        electrode_coord, brain_mask.shape, affine
+    )
+    bins = smooth_distance_bin_weights(
+        distance_mm, brain_mask, DISTANCE_BOUNDARIES_MM, DISTANCE_TRANSITION_MM
+    )
+    return distance_mm, bins
+
+
+def compute_depth_map_and_bins(brain_mask, affine):
+    """Distance to nearest binary-mask boundary, including sulci/ventricles."""
+    import nibabel as nib
+    from scipy.ndimage import distance_transform_edt
+
+    brain_mask = np.asarray(brain_mask, dtype=bool)
+    if brain_mask.ndim != 3 or not brain_mask.any():
+        raise ValueError("brain_mask must be a non-empty 3D array.")
+    spacing = nib.affines.voxel_sizes(affine)
+    depth_mm = distance_transform_edt(brain_mask, sampling=spacing).astype(np.float32)
+    bins = smooth_distance_bin_weights(
+        depth_mm, brain_mask, DEPTH_BOUNDARIES_MM, DEPTH_TRANSITION_MM
+    )
+    return depth_mm, bins
+
+
+def resample_mask_to_reference(mask_path, reference):
+    import nibabel as nib
+    from scipy.ndimage import affine_transform
+
+    image = nib.load(str(mask_path))
+    if len(image.shape) != 3:
+        raise ValueError(f"Expected a 3D resection mask, got {image.shape}: {mask_path}")
+    data = image.get_fdata(dtype=np.float32)
+    if image.shape == reference.shape and np.allclose(image.affine, reference.affine, atol=1e-5):
+        return data
+    output_to_input = np.linalg.inv(image.affine) @ reference.affine
+    return affine_transform(
+        data,
+        output_to_input[:3, :3],
+        offset=output_to_input[:3, 3],
+        output_shape=reference.shape[:3],
+        order=0,
+        mode="constant",
+        cval=0.0,
+        prefilter=False,
+    ).astype(np.float32)
+
+
+def save_depth_qc(depth_mm, bins, brain_mask, affine, output_path):
+    """Save orthogonal depth views and axial soft-bin maps for visual QC."""
+    import nibabel as nib
+    import matplotlib.pyplot as plt
+
+    center_voxel = np.rint(nib.affines.apply_affine(
+        np.linalg.inv(affine), [0.0, 0.0, 0.0]
+    )).astype(int)
+    center_voxel = np.clip(center_voxel, 0, np.asarray(brain_mask.shape) - 1)
+    i, j, k = center_voxel
+    depth_views = (depth_mm[:, :, k].T, depth_mm[:, j, :].T, depth_mm[i, :, :].T)
+    mask_views = (brain_mask[:, :, k].T, brain_mask[:, j, :].T, brain_mask[i, :, :].T)
+    bin_views = [bins[index, :, :, k].T for index in range(3)]
+    titles = (f"Axial, z={affine[2, 2] * k + affine[2, 3]:.0f} mm",
+              f"Coronal, y={affine[1, 1] * j + affine[1, 3]:.0f} mm",
+              f"Sagittal, x={affine[0, 0] * i + affine[0, 3]:.0f} mm")
+    figure, axes = plt.subplots(2, 3, figsize=(12, 8), layout="constrained")
+    for axis, view, mask, title in zip(axes[0], depth_views, mask_views, titles):
+        image = axis.imshow(np.ma.masked_where(~mask, view), origin="lower", cmap="viridis")
+        axis.set_title(title)
+        axis.set_axis_off()
+        figure.colorbar(image, ax=axis, label="Distance to mask boundary (mm)", shrink=0.8)
+    for axis, view, name in zip(axes[1], bin_views, DEPTH_BIN_NAMES):
+        image = axis.imshow(np.ma.masked_where(~brain_mask[:, :, k].T, view),
+                            origin="lower", cmap="magma", vmin=0, vmax=1)
+        axis.set_title(f"Axial {name} weight")
+        axis.set_axis_off()
+        figure.colorbar(image, ax=axis, label="Soft bin weight", shrink=0.8)
+    figure.suptitle(
+        "MNI mask-depth QC: distance to nearest binary-mask boundary; "
+        "not specifically pial cortical depth", weight="bold"
+    )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=150, facecolor="white")
+    plt.close(figure)
+
+
+def print_depth_bin_qc(depth_mm, bins, brain_mask):
+    means = [float(np.average(depth_mm[brain_mask], weights=bins[index, brain_mask]))
+             for index in range(len(DEPTH_BIN_NAMES))]
+    occupancy = bins[:, brain_mask].mean(axis=1)
+    print("Mean soft-bin occupancy: " + ", ".join(
+        f"{name}={value:.3f}" for name, value in zip(DEPTH_BIN_NAMES, occupancy)
+    ))
+    print("Mean depth by soft bin: " + ", ".join(
+        f"{name}={value:.1f} mm" for name, value in zip(DEPTH_BIN_NAMES, means)
+    ))
+    nominal_ranges = (
+        depth_mm[brain_mask] < DEPTH_BOUNDARIES_MM[0],
+        (depth_mm[brain_mask] >= DEPTH_BOUNDARIES_MM[0])
+        & (depth_mm[brain_mask] <= DEPTH_BOUNDARIES_MM[1]),
+        depth_mm[brain_mask] > DEPTH_BOUNDARIES_MM[1],
+    )
+    shares = np.array([
+        [bins[index, brain_mask][region].sum() for region in nominal_ranges]
+        for index in range(len(DEPTH_BIN_NAMES))
+    ])
+    shares /= shares.sum(axis=1, keepdims=True)
+    print("Soft-bin mass in nominal superficial/intermediate/deep ranges:")
+    for name, row in zip(DEPTH_BIN_NAMES, shares):
+        print(f"  {name}: " + ", ".join(f"{value:.1%}" for value in row))
+    if shares[2, 2] < 0.5:
+        print(
+            "Warning: the deep bin has less than half its whole-brain mass above "
+            "25 mm; inspect the QC figure before interpreting it as deep anatomy."
+        )
+    return means
+
 
 # -----------------------------------------------
 # Data-loading utilities (shared across scripts)

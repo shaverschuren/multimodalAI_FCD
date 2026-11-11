@@ -19,16 +19,15 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
-from scipy.ndimage import distance_transform_edt, gaussian_filter
+from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_DIR))
 
-from datasets.eeg import CHANNEL_LABEL_TO_INT
+from datasets.eeg import CHANNEL_LABEL_TO_INT, validate_electrode_coordinates
 
 GAUSSIAN_SIGMA_MM = 30.0
-MAX_ELECTRODE_TO_BRAIN_MM = 2 * GAUSSIAN_SIGMA_MM
 
 
 def load_mni_brain(template_path):
@@ -45,40 +44,6 @@ def load_mni_brain(template_path):
             f"(units={spatial_unit!r}, sform_code={int(sform_code)})."
         )
     return data, img.affine, img.header
-
-
-def validate_electrode_coordinates(electrode_coords, mni_brain, affine, header):
-    """Check coordinate units and plausible placement on the MNI template grid."""
-    spatial_unit, _ = header.get_xyzt_units()
-    if spatial_unit != "mm":
-        raise ValueError(f"Expected template coordinates in millimetres, got {spatial_unit!r}.")
-
-    voxel_sizes = nib.affines.voxel_sizes(affine)
-    brain_distance = distance_transform_edt(mni_brain <= 0, sampling=voxel_sizes)
-    inverse_affine = np.linalg.inv(affine)
-    for channel in CHANNEL_LABEL_TO_INT:
-        if channel not in electrode_coords:
-            raise ValueError(f"Missing scalp coordinate for required channel {channel}.")
-        coordinate = electrode_coords[channel]
-        xyz = np.array([coordinate[axis] for axis in "xyz"], dtype=float)
-        if not np.isfinite(xyz).all():
-            raise ValueError(f"Non-finite scalp coordinate for {channel}: {xyz}.")
-
-        expected_x_sign = -1 if channel[-1:] in "13579" else 1 if channel[-1:] in "02468" else 0
-        if expected_x_sign and xyz[0] * expected_x_sign <= 0:
-            raise ValueError(f"{channel} has unexpected x={xyz[0]:.1f} mm; check coordinate orientation.")
-        if not expected_x_sign and abs(xyz[0]) > 5:
-            raise ValueError(f"Midline channel {channel} has unexpected x={xyz[0]:.1f} mm.")
-
-        voxel = np.rint(nib.affines.apply_affine(inverse_affine, xyz)).astype(int)
-        if np.any(voxel < 0) or np.any(voxel >= np.asarray(mni_brain.shape)):
-            raise ValueError(f"{channel} coordinate lies outside the MNI template: {xyz.tolist()} mm.")
-        distance_mm = brain_distance[tuple(voxel)]
-        if distance_mm > MAX_ELECTRODE_TO_BRAIN_MM:
-            raise ValueError(
-                f"{channel} is {distance_mm:.1f} mm from the template brain; "
-                "coordinate frame may not match the MNI template."
-            )
 
 
 def create_sensitivity_map(electrode_coords, mni_brain, affine, sigma_mm=GAUSSIAN_SIGMA_MM):
