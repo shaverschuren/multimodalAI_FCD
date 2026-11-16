@@ -148,6 +148,17 @@ def reconstruct_channel_only(target, map_paths, reference, brain_mask):
     return volume / total if total > 0 else volume
 
 
+def save_visualization_nifti(volume, reference, output_path, header=None):
+    maximum = float(np.max(volume))
+    visual = volume / maximum if maximum > 0 else np.zeros_like(volume)
+    nii = nib.Nifti1Image(
+        visual.astype(np.float32), reference.affine,
+        (header if header is not None else reference.header).copy(),
+    )
+    nii.set_data_dtype(np.float32)
+    nib.save(nii, output_path)
+
+
 def depth_distribution(volume, depth_bins):
     distribution = np.sum(volume[None] * depth_bins, axis=(1, 2, 3), dtype=np.float64)
     total = distribution.sum()
@@ -234,7 +245,13 @@ def reconstruct(targets_path, sensitivity_dir, output_dir):
             nii = nib.Nifti1Image(oracle.astype(np.float32), reference.affine,
                                   template.header.copy())
             nii.set_data_dtype(np.float32)
-            nib.save(nii, output_dir / f"{patient}_eeg_v2_depth_oracle.nii.gz")
+            oracle_path = output_dir / f"{patient}_eeg_v2_depth_oracle.nii.gz"
+            nib.save(nii, oracle_path)
+            save_visualization_nifti(
+                oracle, reference,
+                output_dir / f"{patient}_eeg_v2_depth_oracle_visualization.nii.gz",
+                template.header,
+            )
 
             row = {"patient_id": patient}
             for name, value in zip(DEPTH_BIN_NAMES, target.sum(axis=0)):

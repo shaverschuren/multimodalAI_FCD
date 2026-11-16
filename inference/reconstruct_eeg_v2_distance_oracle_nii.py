@@ -40,6 +40,7 @@ from reconstruct_eeg_v2_depth_oracle_nii import (
     load_targets,
     reconstruct_channel_only,
     reconstruct_oracle,
+    save_visualization_nifti,
 )
 
 CHANNELS = sorted(CHANNEL_LABEL_TO_INT, key=CHANNEL_LABEL_TO_INT.get)
@@ -176,6 +177,11 @@ def reconstruct(distance_targets_path, sensitivity_dir, output_dir):
             )
             distance_image.set_data_dtype(np.float32)
             nib.save(distance_image, distance_path)
+            save_visualization_nifti(
+                distance_volume, reference,
+                output_dir / f"{patient}_eeg_v2_distance_oracle_visualization.nii.gz",
+                template.header,
+            )
             row = {"patient_id": patient}
             row.update({f"target_{name}": float(value)
                         for name, value in zip(DISTANCE_BIN_NAMES, distance.sum(axis=0))})
@@ -205,11 +211,20 @@ def reconstruct(distance_targets_path, sensitivity_dir, output_dir):
                 f"{patient}_eeg_v2_channel_oracle.nii.gz",
                 f"{patient}_eeg_v2_depth_oracle.nii.gz",
             )
-            for volume, name in zip(volumes, output_names):
+            visualization_names = (
+                f"{patient}_eeg_v2_channel_oracle_visualization.nii.gz",
+                f"{patient}_eeg_v2_depth_oracle_visualization.nii.gz",
+            )
+            for volume, name, visualization_name in zip(
+                volumes[:2], output_names, visualization_names
+            ):
                 image = nib.Nifti1Image(volume.astype(np.float32), reference.affine,
                                          template.header.copy())
                 image.set_data_dtype(np.float32)
                 nib.save(image, output_dir / name)
+                save_visualization_nifti(
+                    volume, reference, output_dir / visualization_name, template.header
+                )
 
             target_center = nib.affines.apply_affine(
                 template.affine, center_of_mass(mask.astype(np.float32))
