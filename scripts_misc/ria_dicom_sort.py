@@ -145,6 +145,9 @@ if not skip_metadata_read:
                         'SeriesDescription': getattr(ds, 'SeriesDescription', ''),
                         'StudyDate': study_date,
                         'StudyTime': study_time,
+                        'FieldStrength': getattr(ds, 'MagneticFieldStrength', ''),
+                        'Manufacturer': getattr(ds, 'Manufacturer', ''),
+                        'Model': getattr(ds, 'ManufacturerModelName', ''),
                         'Dimensions': f"{getattr(ds, 'Rows', 0):>4d} x {getattr(ds, 'Columns', 0):>4d} x {len(dicom_files):>4d}",
                         'VoxelSize': f"{float(getattr(ds, 'PixelSpacing', [0, 0])[0]):.2f} x {float(getattr(ds, 'PixelSpacing', [0, 0])[1]):.2f} x {float(getattr(ds, 'SliceThickness', 0)):.2f}",
                         'Type': dicom_root.split('\\')[-1]
