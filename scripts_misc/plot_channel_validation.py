@@ -16,8 +16,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 
+BIN_GROUPS = (
+    ("near", "intermediate", "far"),
+    ("superficial", "intermediate", "deep"),
+)
+
+
+def split_label(name):
+    normalized = name.casefold()
+    for bins in BIN_GROUPS:
+        for bin_name in bins:
+            suffix = f"_{bin_name}"
+            if normalized.endswith(suffix):
+                return name[:-len(suffix)], bin_name
+    return name, ""
+
 
 def validate_distribution(values, name, patients):
+    values = values.reshape(len(patients), -1)
     invalid = (~np.isfinite(values).all(axis=1)
                | (values < 0).any(axis=1)
                | ~np.isclose(values.sum(axis=1), 1.0, atol=1e-5))
@@ -27,28 +43,83 @@ def validate_distribution(values, name, patients):
 
 
 def load_predictions(csv_path, gt_path=None):
-    with csv_path.open(newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        fields = reader.fieldnames or []
-        rows = list(reader)
+    if csv_path.is_dir():
+        csv_paths = sorted(set(csv_path.rglob("test_predictions.csv"))
+                           | set(csv_path.rglob("test_prediction.csv")))
+    else:
+        csv_paths = [csv_path]
+    if not csv_paths:
+        raise ValueError(f"No test_predictions.csv files found under {csv_path}.")
+    rows = []
+    fields = None
+    seen_patients = set()
+    duplicate_count = 0
+    for prediction_path in csv_paths:
+        with prediction_path.open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
+            file_fields = reader.fieldnames or []
+            if fields is None:
+                fields = file_fields
+            elif file_fields != fields:
+                raise ValueError(f"CSV schema differs in {prediction_path}.")
+            for row in reader:
+                patient = row.get("patient_id", "")
+                if patient in seen_patients:
+                    duplicate_count += 1
+                    continue
+                seen_patients.add(patient)
+                rows.append(row)
+    fields = fields or []
+    if duplicate_count:
+        print(f"Skipped {duplicate_count} duplicate patient rows across {len(csv_paths)} CSV files; kept first sorted occurrence.")
     if not rows or "patient_id" not in fields:
         raise ValueError("CSV must contain patient_id and at least one patient row.")
     if len(fields) != len(set(fields)):
         raise ValueError("CSV contains duplicate column names.")
-    prediction_columns = {name[5:].casefold(): name for name in fields if name.startswith("pred_")}
-    target_columns = {name[7:].casefold(): name for name in fields if name.startswith("target_")}
-    if not prediction_columns or prediction_columns.keys() != target_columns.keys():
-        raise ValueError("CSV must contain matching pred_<channel> and target_<channel> columns.")
-    if len(prediction_columns) != sum(name.startswith("pred_") for name in fields):
-        raise ValueError("Prediction channel names must be unique ignoring case.")
-    if len(target_columns) != sum(name.startswith("target_") for name in fields):
-        raise ValueError("Target channel names must be unique ignoring case.")
-    channels = [name[5:] for name in prediction_columns.values()]
+    prediction_columns = [name for name in fields if name.startswith("pred_")]
+    target_columns = [name for name in fields if name.startswith("target_")]
+    if not prediction_columns or not target_columns:
+        raise ValueError("CSV must contain pred_<channel> and target_<channel> columns.")
+    predictions_by_label = {}
+    targets_by_label = {}
+    channel_names = {}
+    bin_names = []
+    for prefix, columns, destination in (
+        ("pred_", prediction_columns, predictions_by_label),
+        ("target_", target_columns, targets_by_label),
+    ):
+        for column in columns:
+            channel, bin_name = split_label(column[len(prefix):])
+            label = (channel.casefold(), bin_name)
+            if not channel or label in destination:
+                raise ValueError(f"Duplicate or invalid output column {column!r}.")
+            destination[label] = column
+            channel_names.setdefault(channel.casefold(), channel)
+            if bin_name and bin_name not in bin_names:
+                bin_names.append(bin_name)
+    if predictions_by_label.keys() != targets_by_label.keys():
+        raise ValueError("Prediction and target channel/bin columns must match.")
+    if bin_names:
+        expected_bins = next((group for group in BIN_GROUPS if set(bin_names) == set(group)), None)
+        if expected_bins is None or len(bin_names) != 3:
+            raise ValueError(f"Expected one recognized three-bin scheme, got {bin_names}.")
+        bins = list(expected_bins)
+        channels = list(channel_names.values())
+        missing = [channel for channel in channels for bin_name in bins
+                   if (channel.casefold(), bin_name) not in predictions_by_label]
+        if missing:
+            raise ValueError(f"Each electrode needs all three bins; incomplete labels: {missing}.")
+    else:
+        bins = [""]
+        channels = list(channel_names.values())
+    labels = [(channel.casefold(), bin_name) for channel in channels for bin_name in bins]
     patients = [row["patient_id"] for row in rows]
     if any(not patient.strip() for patient in patients) or len(set(patients)) != len(patients):
         raise ValueError("Patient IDs must be nonempty and unique.")
-    predictions = np.array([[float(row[name]) for name in prediction_columns.values()] for row in rows])
-    targets = np.array([[float(row[target_columns[name]]) for name in prediction_columns] for row in rows])
+    predictions = np.array([[float(row[predictions_by_label[label]]) for label in labels]
+                             for row in rows]).reshape(len(rows), len(channels), len(bins))
+    targets = np.array([[float(row[targets_by_label[label]]) for label in labels]
+                        for row in rows]).reshape(len(rows), len(channels), len(bins))
     validate_distribution(predictions, "Predictions", patients)
     validate_distribution(targets, "Targets", patients)
     reference = None
@@ -62,51 +133,88 @@ def load_predictions(csv_path, gt_path=None):
             values = {}
             for name, value in raw[patient].items():
                 key = name.casefold()
-                if key not in prediction_columns:
+                if key not in channel_names:
                     raise ValueError(f"Reference channel {name!r} for {patient} is absent from CSV.")
                 values[key] = values.get(key, 0.0) + float(value)
-            reference_rows.append([values.get(name, 0.0) for name in prediction_columns])
+            reference_rows.append([values.get(channel.casefold(), 0.0) for channel in channels])
         reference = np.array(reference_rows)
         validate_distribution(reference, "Reference GT", patients)
-    return patients, channels, predictions, targets, reference
+    return patients, channels, bins, predictions, targets, reference
 
 
-def plot_page(patients, channels, predictions, targets, reference, title, output, dpi):
+def plot_page(patients, channels, bins, predictions, targets, reference, title, output, dpi):
     count = len(patients)
     positions = np.arange(count)
-    overlap = np.minimum(predictions, targets).sum(axis=1)
-    predicted_top = predictions.argmax(axis=1)
-    target_top = targets.argmax(axis=1)
+    channel_predictions = predictions.sum(axis=2)
+    channel_targets = targets.sum(axis=2)
+    overlap = np.minimum(predictions, targets).sum(axis=(1, 2))
+    predicted_top = predictions.reshape(count, -1).argmax(axis=1)
+    target_top = targets.reshape(count, -1).argmax(axis=1)
+    bin_count = len(bins)
+    category_names = [
+        f"{channel}-{bin_name[0].upper()}" if bin_name else channel
+        for channel in channels for bin_name in bins
+    ]
+
+    def label_at(index):
+        channel = channels[index // bin_count]
+        bin_name = bins[index % bin_count]
+        return f"{channel}/{bin_name}" if bin_name else channel
+
     columns = 3 if reference is not None else 2
     figure = plt.figure(figsize=(6.3 * columns, max(8, 3.8 + 0.57 * count)), layout="constrained")
     grid = figure.add_gridspec(2, columns, height_ratios=[1.15, 1])
     heatmap_axes = []
-    panels = [(targets, "CSV target"), (predictions, "Prediction")]
+    panels = [(targets.reshape(count, -1), category_names, "CSV target"),
+              (predictions.reshape(count, -1), category_names, "Prediction")]
     if reference is not None:
-        panels.append((reference, "Reference GT"))
-    for column, (values, heading) in enumerate(panels):
+        panels.append((reference, channels, "Reference channel GT"))
+    joint_vmax = max(float(targets.max()), float(predictions.max()), 1e-8)
+    joint_image = reference_image = None
+    for column, (values, labels, heading) in enumerate(panels):
         axis = figure.add_subplot(grid[0, column])
         heatmap_axes.append(axis)
-        image = axis.imshow(values, vmin=0, vmax=1, cmap="YlGnBu", aspect="auto")
-        axis.set_xticks(np.arange(len(channels)), channels, rotation=90)
+        is_reference = heading == "Reference channel GT"
+        vmax = max(float(values.max()), 1e-8) if is_reference else joint_vmax
+        image = axis.imshow(values, vmin=0, vmax=vmax, cmap="YlGnBu", aspect="auto")
+        if is_reference:
+            reference_image = image
+        else:
+            joint_image = image
+        if bin_count > 1 and not is_reference:
+            axis.set_xticks(np.arange(len(labels)),
+                            [name[0].upper() for _ in channels for name in bins],
+                            fontsize=7)
+            centers = np.arange(len(channels)) * bin_count + (bin_count - 1) / 2
+            electrode_axis = axis.secondary_xaxis("top")
+            electrode_axis.set_xticks(centers, channels)
+            electrode_axis.tick_params(axis="x", labelsize=7, length=0, pad=3)
+            axis.set_xlabel("Electrode (top) / bin (bottom)")
+        else:
+            axis.set_xticks(np.arange(len(labels)), labels, rotation=90)
         axis.set_yticks(positions, patients)
         axis.set_yticks(np.arange(count + 1) - 0.5, minor=True)
         axis.grid(which="minor", axis="y", color="white", linewidth=1)
         axis.tick_params(which="minor", left=False)
-        axis.set_title(heading, loc="left", weight="bold", pad=12)
+        axis.set_title(heading, loc="left", weight="bold",
+                   pad=32 if bin_count > 1 and not is_reference else 12)
         for patient_index, values_row in enumerate(values):
             channel_index = values_row.argmax()
             axis.text(channel_index, patient_index, f"{values_row[channel_index]:.2f}",
                       ha="center", va="center", fontsize=8,
                       color="white" if values_row[channel_index] > 0.55 else "black")
-    figure.colorbar(image, ax=heatmap_axes, label="Channel probability", shrink=0.65, pad=0.02)
+    figure.colorbar(joint_image, ax=heatmap_axes[:2],
+                    label="Joint probability mass", shrink=0.65, pad=0.02)
+    if reference_image is not None:
+        figure.colorbar(reference_image, ax=heatmap_axes[2],
+                        label="Channel marginal", shrink=0.65, pad=0.02)
     agreement = figure.add_subplot(grid[1, 0])
     matches = predicted_top == target_top
     agreement.barh(positions, overlap, color=["#168b82" if match else "#ba6357" for match in matches])
     for index, value in enumerate(overlap):
         agreement.text(value + 0.015, index, f"{value:.2f}", va="center", fontsize=9)
     agreement.set_yticks(positions, [
-        f"{patient}  {channels[target_top[index]]} > {channels[predicted_top[index]]}"
+        f"{patient}  {label_at(target_top[index])} > {label_at(predicted_top[index])}"
         for index, patient in enumerate(patients)
     ])
     agreement.set_xlim(0, 1.12)
@@ -114,8 +222,9 @@ def plot_page(patients, channels, predictions, targets, reference, title, output
     agreement.invert_yaxis()
     agreement.set_title("Distribution overlap", loc="left", weight="bold", pad=12)
     agreement.set_xlabel("Higher is better | row label: target > prediction")
-    agreement.legend(handles=[Patch(color="#168b82", label="Top channel matches"),
-                              Patch(color="#ba6357", label="Top channel differs")],
+    category_label = "channel/bin" if bin_count > 1 else "channel"
+    agreement.legend(handles=[Patch(color="#168b82", label=f"Top {category_label} matches"),
+                              Patch(color="#ba6357", label=f"Top {category_label} differs")],
                      loc="upper center", bbox_to_anchor=(0.5, -0.18), frameon=False, fontsize=9)
     side_axis = figure.add_subplot(grid[1, 1])
     categories = [
@@ -126,7 +235,7 @@ def plot_page(patients, channels, predictions, targets, reference, title, output
     assigned = {index for _, _, indices in categories for index in indices}
     if len(assigned) != len(channels):
         categories.append(("Other", "#738ca5", [index for index in range(len(channels)) if index not in assigned]))
-    for values, offset in [(targets, -0.18), (predictions, 0.18)]:
+    for values, offset in [(channel_targets, -0.18), (channel_predictions, 0.18)]:
         left_edge = np.zeros(count)
         for _, color, indices in categories:
             mass = values[:, indices].sum(axis=1)
@@ -141,7 +250,7 @@ def plot_page(patients, channels, predictions, targets, reference, title, output
                      ncol=len(categories), loc="upper center", bbox_to_anchor=(0.5, -0.18), frameon=False, fontsize=9)
     if reference is not None:
         drift_axis = figure.add_subplot(grid[1, 2])
-        drift = 0.5 * np.abs(targets - reference).sum(axis=1)
+        drift = 0.5 * np.abs(channel_targets - reference).sum(axis=1)
         drift_axis.barh(positions, drift, color="#b25362")
         for index, value in enumerate(drift):
             drift_axis.text(value + 0.015, index, f"{value:.2f}", va="center", fontsize=9)
@@ -151,7 +260,8 @@ def plot_page(patients, channels, predictions, targets, reference, title, output
         drift_axis.set_xticks([0, 0.25, 0.5, 0.75, 1])
         drift_axis.set_title("CSV target vs reference GT", loc="left", weight="bold", pad=12)
         drift_axis.set_xlabel("Total variation: 0 = identical; 1 = disjoint")
-    figure.suptitle(f"{title}\n{count} patients | top-channel matches {matches.sum()}/{count}"
+    agreement_name = "top channel/bin" if bin_count > 1 else "top-channel"
+    figure.suptitle(f"{title}\n{count} patients | {agreement_name} matches {matches.sum()}/{count}"
                    f" | mean overlap {overlap.mean():.2f}", fontsize=15, weight="bold")
     figure.savefig(output, dpi=dpi, facecolor="white")
     plt.close(figure)
@@ -159,7 +269,8 @@ def plot_page(patients, channels, predictions, targets, reference, title, output
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("csv_path", type=Path, help="CSV containing patient_id, pred_<channel>, target_<channel>.")
+    parser.add_argument("csv_path", type=Path,
+                        help="Prediction CSV or folder of fold runs containing test_predictions.csv.")
     parser.add_argument("--gt-json", type=Path, help="Optional patient-to-channel GT JSON for target auditing.")
     parser.add_argument("--output", type=Path, help="Output PNG path; defaults to data/tmp/<CSV stem>_diagnostic.png.")
     parser.add_argument("--sort", choices=["worst", "patient", "input"], default="worst")
@@ -169,10 +280,12 @@ def main():
     if args.patients_per_page < 1 or args.dpi < 1:
         parser.error("--patients-per-page and --dpi must be positive.")
     try:
-        patients, channels, predictions, targets, reference = load_predictions(args.csv_path, args.gt_json)
+        patients, channels, bins, predictions, targets, reference = load_predictions(
+            args.csv_path, args.gt_json
+        )
     except (ValueError, KeyError, OSError) as exc:
         parser.error(str(exc))
-    overlap = np.minimum(predictions, targets).sum(axis=1)
+    overlap = np.minimum(predictions, targets).sum(axis=(1, 2))
     order = np.argsort(overlap, kind="stable") if args.sort == "worst" else (
         np.argsort(patients, kind="stable") if args.sort == "patient" else np.arange(len(patients)))
     output = args.output or (Path(__file__).resolve().parents[2] / "data" / "tmp"
@@ -184,11 +297,18 @@ def main():
             selected = order[page * args.patients_per_page:(page + 1) * args.patients_per_page]
             page_output = output if page_count == 1 else output.with_name(f"{output.stem}_page{page + 1:02d}{output.suffix}")
             title = args.csv_path.stem + (f" | page {page + 1}/{page_count}" if page_count > 1 else "")
-            plot_page([patients[index] for index in selected], channels, predictions[selected], targets[selected],
-                      reference[selected] if reference is not None else None, title, page_output, args.dpi)
+            plot_page(
+                [patients[index] for index in selected], channels, bins,
+                predictions[selected], targets[selected],
+                reference[selected] if reference is not None else None,
+                title, page_output, args.dpi,
+            )
             print(f"Saved: {page_output}")
-    matches = (predictions.argmax(axis=1) == targets.argmax(axis=1)).sum()
-    print(f"All {len(patients)} patients: top-channel matches {matches}/{len(patients)}, mean overlap {overlap.mean():.3f}")
+        matches = (predictions.reshape(len(patients), -1).argmax(axis=1)
+               == targets.reshape(len(patients), -1).argmax(axis=1)).sum()
+        category = "channel/bin" if len(bins) > 1 else "channel"
+        print(f"All {len(patients)} patients: top-{category} matches {matches}/{len(patients)}, "
+            f"mean overlap {overlap.mean():.3f}")
 
 
 if __name__ == "__main__":
