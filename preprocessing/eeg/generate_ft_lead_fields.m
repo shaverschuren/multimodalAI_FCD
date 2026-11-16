@@ -16,7 +16,7 @@ OUTPUT_DIR = fullfile(ROOT_DIR, 'data', 'preprocessing', ...
 CHANNELS = {'Fp1','Fp2','F9','F10','F7','F3','Fz','F4','F8', ...
     'T7','C3','Cz','C4','T8','P7','P3','Pz','P4','P8','O1','O2'};
 
-GRID_STEP_VOX = 1;       % ~1 mm for the 1 mm template
+GRID_STEP_VOX = 5;       % ~5 mm for the 1 mm template
 INWARD_SHIFT_MM = 1;     % Avoid dipoles on the BEM boundary
 
 [~, ft_dir] = ft_version;
@@ -90,14 +90,20 @@ sensitivity = zeros(numel(lf.inside), n_channels, 'single');
 channel_idx = cellfun(@(c) find(strcmp(lf.label, c), 1), CHANNELS);
 
 for idx = find(lf.inside(:))'
-    L = double(lf.leadfield{idx});  % Channels x 3 orientations
-
-    % Common-average reference across our 21 channels
+    % L = double(lf.leadfield{idx});  % Channels x 3 orientations
+    % 
+    % % Common-average reference across our 21 channels
+    % L = L - mean(L, 1);
+    % 
+    % % Euclidean norm across dipole orientations
+    % sensitivity(idx, :) = single( ...
+    %     sqrt(sum(L(channel_idx, :).^2, 2)))';
+    L = double(lf.leadfield{idx});
+    L = L(channel_idx, :);
     L = L - mean(L, 1);
-
-    % Euclidean norm across dipole orientations
-    sensitivity(idx, :) = single( ...
-        sqrt(sum(L(channel_idx, :).^2, 2)))';
+    
+    power = sum(L.^2, 2);
+    sensitivity(idx, :) = single(power / max(sum(power), eps))';
 end
 
 %% 5. Interpolate to the full MNI grid and export NIfTIs
