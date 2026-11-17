@@ -678,7 +678,12 @@ def _resample_to_target(
     Falls back to simple shape-based check if no affines are available; in
     that case raises if shapes differ.
     """
-    if src_data.shape == tgt_data.shape:
+    same_shape = src_data.shape == tgt_data.shape
+    same_affine = (
+        src_affine is None or tgt_affine is None
+        or np.allclose(src_affine, tgt_affine, atol=1e-4)
+    )
+    if same_shape and same_affine:
         return src_data
 
     if src_affine is None or tgt_affine is None:
@@ -786,8 +791,12 @@ def run_fold(
             skip_eeg.append(sid)
             continue
 
-        # Align EEG map to MRI space if shapes differ.
-        if eeg_data.shape != mri_data.shape:
+        # Align EEG to MRI space when either the array grid or affine differs.
+        same_grid = eeg_data.shape == mri_data.shape and (
+            eeg_affine is None or mri_affine is None
+            or np.allclose(eeg_affine, mri_affine, atol=1e-4)
+        )
+        if not same_grid:
             try:
                 eeg_data = _resample_to_target(eeg_data, eeg_affine, mri_data, mri_affine)
             except Exception as exc:
@@ -861,7 +870,11 @@ def run_test_set(
             skip_eeg.append(sid)
             continue
 
-        if eeg_data.shape != mri_data.shape:
+        same_grid = eeg_data.shape == mri_data.shape and (
+            eeg_affine is None or mri_affine is None
+            or np.allclose(eeg_affine, mri_affine, atol=1e-4)
+        )
+        if not same_grid:
             try:
                 eeg_data = _resample_to_target(eeg_data, eeg_affine, mri_data, mri_affine)
             except Exception as exc:
