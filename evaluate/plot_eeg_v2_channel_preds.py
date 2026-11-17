@@ -52,8 +52,6 @@ def load_predictions(csv_path, gt_path=None):
         raise ValueError(f"No test_predictions.csv files found under {csv_path}.")
     rows = []
     fields = None
-    seen_patients = set()
-    duplicate_count = 0
     for prediction_path in csv_paths:
         with prediction_path.open(newline="", encoding="utf-8-sig") as handle:
             reader = csv.DictReader(handle)
@@ -63,17 +61,10 @@ def load_predictions(csv_path, gt_path=None):
             elif file_fields != fields:
                 raise ValueError(f"CSV schema differs in {prediction_path}.")
             for row in reader:
-                patient = row.get("patient_id", "")
-                if patient in seen_patients:
-                    duplicate_count += 1
-                    continue
-                seen_patients.add(patient)
-                rows.append(row)
+                rows.append((row, prediction_path))
     fields = fields or []
-    if duplicate_count:
-        print(f"Skipped {duplicate_count} duplicate patient rows across {len(csv_paths)} CSV files; kept first sorted occurrence.")
-    if not rows or "patient_id" not in fields:
-        raise ValueError("CSV must contain patient_id and at least one patient row.")
+    if "patient_id" not in fields:
+        raise ValueError("CSV must contain a patient_id column.")
     if len(fields) != len(set(fields)):
         raise ValueError("CSV contains duplicate column names.")
     prediction_columns = [name for name in fields if name.startswith("pred_")]
@@ -113,8 +104,37 @@ def load_predictions(csv_path, gt_path=None):
         bins = [""]
         channels = list(channel_names.values())
     labels = [(channel.casefold(), bin_name) for channel in channels for bin_name in bins]
+    valid_rows = []
+    seen_patients = set()
+    duplicate_count = unlabelled_count = 0
+    for row, source_path in rows:
+        patient = row.get("patient_id", "").strip()
+        if not patient:
+            raise ValueError(f"Empty patient_id in {source_path}.")
+        prediction_values = [row.get(predictions_by_label[label], "").strip()
+                             for label in labels]
+        if any(not value for value in prediction_values):
+            raise ValueError(f"Blank prediction value for {patient} in {source_path}.")
+        target_values = [row.get(targets_by_label[label], "").strip() for label in labels]
+        if all(not value for value in target_values):
+            unlabelled_count += 1
+            continue
+        if any(not value for value in target_values):
+            raise ValueError(f"Partially blank target distribution for {patient} in {source_path}.")
+        if patient in seen_patients:
+            duplicate_count += 1
+            continue
+        seen_patients.add(patient)
+        valid_rows.append(row)
+    if unlabelled_count:
+        print(f"Skipped {unlabelled_count} rows with predictions but no target labels.")
+    if duplicate_count:
+        print(f"Skipped {duplicate_count} duplicate labeled patients; kept first sorted occurrence.")
+    rows = valid_rows
+    if not rows:
+        raise ValueError("No labeled prediction rows remain after filtering blank test targets.")
     patients = [row["patient_id"] for row in rows]
-    if any(not patient.strip() for patient in patients) or len(set(patients)) != len(patients):
+    if len(set(patients)) != len(patients):
         raise ValueError("Patient IDs must be nonempty and unique.")
     predictions = np.array([[float(row[predictions_by_label[label]]) for label in labels]
                              for row in rows]).reshape(len(rows), len(channels), len(bins))
@@ -127,16 +147,39 @@ def load_predictions(csv_path, gt_path=None):
         with gt_path.open(encoding="utf-8") as handle:
             raw = json.load(handle)
         reference_rows = []
+        reference_is_joint = None
         for patient in patients:
             if patient not in raw or not isinstance(raw[patient], dict):
                 raise ValueError(f"Reference GT lacks a channel distribution for {patient}.")
-            values = {}
-            for name, value in raw[patient].items():
-                key = name.casefold()
-                if key not in channel_names:
-                    raise ValueError(f"Reference channel {name!r} for {patient} is absent from CSV.")
-                values[key] = values.get(key, 0.0) + float(value)
-            reference_rows.append([values.get(channel.casefold(), 0.0) for channel in channels])
+            entry = raw[patient]
+            is_joint = any(isinstance(value, dict) for value in entry.values())
+            if any(isinstance(value, dict) != is_joint for value in entry.values()):
+                raise ValueError(f"Mixed channel-only and joint labels in reference GT for {patient}.")
+            if reference_is_joint is None:
+                reference_is_joint = is_joint
+            elif reference_is_joint != is_joint:
+                raise ValueError("Reference GT mixes channel-only and joint target formats.")
+            channel_values = {name.casefold(): value for name, value in entry.items()}
+            unknown = set(channel_values) - set(channel_names)
+            if unknown:
+                raise ValueError(f"Reference channels absent from CSV for {patient}: {sorted(unknown)}")
+            if is_joint:
+                joint = np.zeros((len(channels), len(bins)), dtype=np.float64)
+                for channel_index, channel in enumerate(channels):
+                    bin_values = channel_values.get(channel.casefold(), {})
+                    for bin_index, bin_name in enumerate(bins):
+                        if bin_name and bin_name not in bin_values:
+                            raise ValueError(f"Reference GT lacks {channel}/{bin_name} for {patient}.")
+                        if bin_name:
+                            joint[channel_index, bin_index] = float(bin_values[bin_name])
+                        elif bin_values:
+                            joint[channel_index, 0] = sum(float(value) for value in bin_values.values())
+                reference_rows.append(joint.sum(axis=1) if bins == [""] else joint)
+            else:
+                reference_rows.append([
+                    float(channel_values.get(channel.casefold(), 0.0))
+                    for channel in channels
+                ])
         reference = np.array(reference_rows)
         validate_distribution(reference, "Reference GT", patients)
     return patients, channels, bins, predictions, targets, reference
@@ -168,13 +211,16 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
     panels = [(targets.reshape(count, -1), category_names, "CSV target"),
               (predictions.reshape(count, -1), category_names, "Prediction")]
     if reference is not None:
-        panels.append((reference, channels, "Reference channel GT"))
+        if reference.ndim == 3:
+            panels.append((reference.reshape(count, -1), category_names, "Reference joint GT"))
+        else:
+            panels.append((reference, channels, "Reference channel GT"))
     joint_vmax = max(float(targets.max()), float(predictions.max()), 1e-8)
     joint_image = reference_image = None
     for column, (values, labels, heading) in enumerate(panels):
         axis = figure.add_subplot(grid[0, column])
         heatmap_axes.append(axis)
-        is_reference = heading == "Reference channel GT"
+        is_reference = heading.startswith("Reference")
         vmax = max(float(values.max()), 1e-8) if is_reference else joint_vmax
         image = axis.imshow(values, vmin=0, vmax=vmax, cmap="YlGnBu", aspect="auto")
         if is_reference:
@@ -250,7 +296,10 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
                      ncol=len(categories), loc="upper center", bbox_to_anchor=(0.5, -0.18), frameon=False, fontsize=9)
     if reference is not None:
         drift_axis = figure.add_subplot(grid[1, 2])
-        drift = 0.5 * np.abs(channel_targets - reference).sum(axis=1)
+        if reference.ndim == 3:
+            drift = 0.5 * np.abs(targets - reference).sum(axis=(1, 2))
+        else:
+            drift = 0.5 * np.abs(channel_targets - reference).sum(axis=1)
         drift_axis.barh(positions, drift, color="#b25362")
         for index, value in enumerate(drift):
             drift_axis.text(value + 0.015, index, f"{value:.2f}", va="center", fontsize=9)
@@ -258,7 +307,9 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
         drift_axis.invert_yaxis()
         drift_axis.set_xlim(0, 1.12)
         drift_axis.set_xticks([0, 0.25, 0.5, 0.75, 1])
-        drift_axis.set_title("CSV target vs reference GT", loc="left", weight="bold", pad=12)
+        reference_level = "joint" if reference.ndim == 3 else "channel"
+        drift_axis.set_title(f"CSV target vs reference {reference_level} GT",
+                     loc="left", weight="bold", pad=12)
         drift_axis.set_xlabel("Total variation: 0 = identical; 1 = disjoint")
     agreement_name = "top channel/bin" if bin_count > 1 else "top-channel"
     figure.suptitle(f"{title}\n{count} patients | {agreement_name} matches {matches.sum()}/{count}"
@@ -269,7 +320,7 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("csv_path", type=Path,
+    parser.add_argument("--csv-path", type=Path,
                         help="Prediction CSV or folder of fold runs containing test_predictions.csv.")
     parser.add_argument("--gt-json", type=Path, help="Optional patient-to-channel GT JSON for target auditing.")
     parser.add_argument("--output", type=Path, help="Output PNG path; defaults to data/tmp/<CSV stem>_diagnostic.png.")

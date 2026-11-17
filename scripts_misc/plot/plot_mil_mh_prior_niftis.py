@@ -20,10 +20,12 @@ python scripts_other/plot/plot_mil_mh_prior_niftis.py \
 """
 
 import argparse
+import itertools
 import json
 import math
 import os
 import re
+import warnings
 from glob import glob
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -49,6 +51,49 @@ def _extract_pid(path: str, suffix: str) -> Optional[str]:
     if match:
         return match.group(1)
     return name_without_suffix
+
+
+def _nifti_world_bounds(image: nib.spatialimages.SpatialImage) -> Tuple[np.ndarray, np.ndarray]:
+    shape = image.shape[:3]
+    corners = np.array(list(itertools.product(*[(0, size - 1) for size in shape])))
+    world = nib.affines.apply_affine(image.affine, corners)
+    return world.min(axis=0), world.max(axis=0)
+
+
+def _align_nifti_to_reference(source: nib.spatialimages.SpatialImage,
+                             reference: nib.spatialimages.SpatialImage,
+                             order: int, label: str) -> Tuple[np.ndarray, bool]:
+    """Resample a world-aligned 3D image to the reference NIfTI grid."""
+    if len(source.shape) != 3 or len(reference.shape) != 3:
+        raise ValueError(f"{label} and reference must both be 3D.")
+    source_unit, _ = source.header.get_xyzt_units()
+    reference_unit, _ = reference.header.get_xyzt_units()
+    if source_unit != reference_unit and source_unit != "unknown" and reference_unit != "unknown":
+        raise ValueError(
+            f"{label} units ({source_unit}) differ from reference units ({reference_unit})."
+        )
+    if source_unit == "unknown" or reference_unit == "unknown":
+        warnings.warn(
+            f"{label}: NIfTI spatial units are unknown; interpreting affines as mm.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if source.shape == reference.shape and np.allclose(source.affine, reference.affine, atol=1e-4):
+        return np.asarray(source.get_fdata(dtype=np.float32), dtype=np.float32), False
+
+    source_min, source_max = _nifti_world_bounds(source)
+    reference_min, reference_max = _nifti_world_bounds(reference)
+    overlap = np.minimum(source_max, reference_max) - np.maximum(source_min, reference_min)
+    if np.any(overlap <= 0):
+        raise ValueError(f"{label} and reference have no overlapping world-space bounds.")
+
+    from nibabel.processing import resample_from_to
+
+    aligned = resample_from_to(source, reference, order=order)
+    data = np.asarray(aligned.get_fdata(dtype=np.float32), dtype=np.float32)
+    if data.shape != reference.shape:
+        raise ValueError(f"{label} resampling returned {data.shape}, expected {reference.shape}.")
+    return data, True
 
 
 def _index_files(root_dir: str, suffix: str, must_contain_dir: Optional[str] = None) -> Dict[str, str]:
@@ -171,7 +216,7 @@ def _safe_percentile(values: np.ndarray, q: float, fallback: float) -> float:
 def _visual_style(white_background: bool) -> Tuple[str, str, mcolors.Colormap]:
     bg = "white" if white_background else "black"
     fg = "black" if white_background else "white"
-    gray_cmap = plt.cm.get_cmap("gray").copy()
+    gray_cmap = plt.get_cmap("gray").copy()
     gray_cmap.set_bad(color=bg)
     return bg, fg, gray_cmap
 
@@ -345,7 +390,10 @@ def _plot_single_patient(
 
     # Restrict prior to voxels supported by the normalized T1 image.
     prior = np.where(t1 > _safe_percentile(t1, 10, fallback=0.0), prior, 0.0).astype(np.float32)
-    prior = np.clip(prior, 0.0, 1.0).astype(np.float32)
+    prior = np.clip(prior, 0.0, None)
+    prior_max = float(prior.max())
+    if prior_max > 0.0:
+        prior /= prior_max
 
     t1_slices = _slice_triplet(t1, center)
     prior_slices = _slice_triplet(prior, center)
@@ -399,7 +447,7 @@ def _plot_single_patient(
     sm = plt.cm.ScalarMappable(norm=mcolors.Normalize(vmin=0.0, vmax=1.0), cmap=prior_cmap)
     sm.set_array([])
     cbar = fig.colorbar(sm, cax=cax)
-    cbar.set_label("Prior", color=fg_color, fontsize=7)
+    cbar.set_label("Relative prior (max=1)", color=fg_color, fontsize=7)
     cbar.ax.tick_params(colors=fg_color, labelsize=7, length=2)
     cbar.outline.set_edgecolor(fg_color)
 
@@ -656,15 +704,22 @@ def main() -> None:
             skipped_missing += 1
             continue
 
-        prior = np.asarray(nib.load(prior_path).get_fdata(dtype=np.float32), dtype=np.float32)
-        t1 = np.asarray(nib.load(t1_path).get_fdata(dtype=np.float32), dtype=np.float32)
-        gt = np.asarray(nib.load(gt_path).get_fdata(dtype=np.float32), dtype=np.float32)
-
-        if prior.shape != t1.shape or gt.shape != t1.shape:
-            print(
-                f"[skip] {patient_id}: shape mismatch "
-                f"prior={prior.shape}, t1={t1.shape}, gt={gt.shape}"
+        try:
+            t1_image = nib.load(t1_path)
+            prior, prior_resampled = _align_nifti_to_reference(
+                nib.load(prior_path), t1_image, order=1, label=f"{patient_id} prior"
             )
+            gt, gt_resampled = _align_nifti_to_reference(
+                nib.load(gt_path), t1_image, order=0, label=f"{patient_id} GT"
+            )
+            t1 = np.asarray(t1_image.get_fdata(dtype=np.float32), dtype=np.float32)
+            if prior_resampled or gt_resampled:
+                print(
+                    f"[resampled] {patient_id}: prior={prior_resampled}, "
+                    f"GT={gt_resampled} -> T1 grid {t1.shape}"
+                )
+        except Exception as exc:
+            print(f"[skip] {patient_id}: could not align prior/T1/GT: {exc}")
             skipped_missing += 1
             continue
 
@@ -702,11 +757,16 @@ def main() -> None:
                 flair_path = flair_map.get(patient_id)
                 if flair_path is not None:
                     try:
-                        flair = np.asarray(nib.load(flair_path).get_fdata(dtype=np.float32), dtype=np.float32)
+                        flair, flair_resampled = _align_nifti_to_reference(
+                            nib.load(flair_path), t1_image, order=1,
+                            label=f"{patient_id} FLAIR",
+                        )
+                        if flair_resampled:
+                            print(f"[resampled] {patient_id}: FLAIR -> T1 grid {t1.shape}")
                     except Exception:
                         flair = None
 
-                    if flair is None or flair.shape != t1.shape:
+                    if flair is None:
                         raw_scan_skipped += 1
                     else:
                         flair_raw_out = os.path.join(raw_scan_dir, f"{patient_id}_FLAIR.png")
