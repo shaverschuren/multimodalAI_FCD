@@ -290,6 +290,8 @@ def train(args):
             min_spikes_per_patient=32, training=training)
 
     train_ds = make_dataset(train_ids, True, args.max_spikes)
+    if args.temporal_mode == 'raw_bipolar':
+        train_ds.augmenter.p_channel_dropout = 0.0
     val_ds = make_dataset(val_ids, False, args.max_spikes_val)
     if not len(train_ds) or not len(val_ds):
         raise ValueError('No valid training or validation subjects after filtering.')
@@ -304,10 +306,12 @@ def train(args):
     val_loader = DataLoader(val_ds, shuffle=False, **loader_args)
 
     model = SpikeMILModel_v2(spatial_mixing=args.spatial_mixing,
-                             num_bins=len(bin_names), mode=args.mode).to(device)
+                             num_bins=len(bin_names), mode=args.mode,
+                             temporal_mode=args.temporal_mode).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=5e-3)
     run_mode = f'joint_{target_type}' if args.mode == 'joint' else 'factorized_depth'
-    run_name = (f'eeg_v2_fold{args.fold}_{args.spatial_mixing}_{run_mode}_'
+    run_name = (f'eeg_v2_fold{args.fold}_{args.spatial_mixing}_'
+                f'{args.temporal_mode}_{run_mode}_'
                 f'{datetime.now():%Y%m%d-%H%M%S}')
     out_dir = Path(args.log_root) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -345,6 +349,7 @@ def train(args):
             checkpoint = {
                 'epoch': epoch, 'model_state_dict': model.state_dict(),
                 'mode': args.mode, 'validation_loss': best_loss,
+                'temporal_mode': args.temporal_mode,
                 'target_type': target_type, 'target_paths': label_paths,
                 'bin_names': list(bin_names), 'channel_order': CHANNELS,
                 'depth_loss_weight': args.depth_loss_weight,
@@ -359,6 +364,12 @@ def train(args):
     writer.close()
     checkpoint = torch.load(out_dir / 'checkpoint_best.pt', map_location=device,
                             weights_only=False)
+    checkpoint_temporal_mode = checkpoint.get('temporal_mode', 'raw')
+    if checkpoint_temporal_mode != args.temporal_mode:
+        raise ValueError(
+            f"Checkpoint temporal mode {checkpoint_temporal_mode!r} does not "
+            f"match selected mode {args.temporal_mode!r}."
+        )
     model.load_state_dict(checkpoint['model_state_dict'])
     save_predictions(model, val_loader, val_ds.patient_ids, device,
                      out_dir / 'val_predictions.csv', bin_names, mode=args.mode,
@@ -408,6 +419,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--spatial_mixing', choices=['pairwise', 'mlp'],
                         default='pairwise')
+    parser.add_argument('--temporal_mode', choices=['raw', 'raw_bipolar'],
+                        default='raw')
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--log_root', default='./runs')
     parser.add_argument('--run-test-inference', action='store_true')

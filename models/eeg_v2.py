@@ -28,6 +28,7 @@ Output: (batch, 21, 3) joint probabilities, summing to one.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class MultiScaleBlock(nn.Module):
@@ -65,6 +66,52 @@ class TemporalEncoder_v2(nn.Module):
         h = self.down(self.ms2(h))
         h = h.mean(dim=-1)
         return h.reshape(batch, channels, 32)
+
+
+class BipolarTemporalEncoder(nn.Module):
+    """Encode all directed channel differences, then aggregate by electrode."""
+
+    def __init__(self, pair_chunk_size=32):
+        super().__init__()
+        self.pair_chunk_size = pair_chunk_size
+        self.temporal = nn.Sequential(
+            nn.Conv1d(1, 8, kernel_size=7, stride=2, padding=3),
+            nn.GELU(),
+            nn.Conv1d(8, 16, kernel_size=5, stride=2, padding=2),
+            nn.GELU(),
+        )
+        self.pair_projection = nn.Linear(16, 32)
+        self.channel_projection = nn.Linear(64, 32)
+
+    def _encode_traces(self, traces):
+        features = self.temporal(traces)
+        return self.pair_projection(features.mean(dim=-1))
+
+    def forward(self, x):
+        batch, channels, samples = x.shape
+        if channels != 21:
+            raise ValueError(f'Expected 21 EEG channels, got {channels}.')
+
+        # Flattened pair indices preserve all 21 x 21 directed differences.
+        pair_i = torch.arange(channels, device=x.device).repeat_interleave(channels)
+        pair_j = torch.arange(channels, device=x.device).repeat(channels)
+        pair_chunks = []
+        for start in range(0, channels * channels, self.pair_chunk_size):
+            end = min(start + self.pair_chunk_size, channels * channels)
+            traces = (x[:, pair_i[start:end], :] - x[:, pair_j[start:end], :])
+            traces = traces.reshape(batch * (end - start), 1, samples)
+            if self.training and torch.is_grad_enabled():
+                encoded = checkpoint(self._encode_traces, traces, use_reentrant=False)
+            else:
+                encoded = self._encode_traces(traces)
+            pair_chunks.append(encoded.reshape(batch, end - start, 32))
+
+        pair_features = torch.cat(pair_chunks, dim=1).reshape(
+            batch, channels, channels, 32)
+        diagonal = pair_features.diagonal(dim1=1, dim2=2).transpose(1, 2)
+        row = (pair_features.sum(dim=2) - diagonal) / (channels - 1)
+        column = (pair_features.sum(dim=1) - diagonal) / (channels - 1)
+        return self.channel_projection(torch.cat((row, column), dim=-1))
 
 
 class PairwiseSpatialMixer(nn.Module):
@@ -108,22 +155,34 @@ class MLPSpatialMixer(nn.Module):
 class SpikeEncoder_v2(nn.Module):
     """Encode each spike into channel-aligned 32D feature vectors."""
 
-    def __init__(self, spatial_mixing='pairwise'):
+    def __init__(self, spatial_mixing='pairwise', temporal_mode='raw'):
         super().__init__()
         mixers = {'pairwise': PairwiseSpatialMixer, 'mlp': MLPSpatialMixer}
         if spatial_mixing not in mixers:
             raise ValueError(f'Unknown spatial mixer: {spatial_mixing}')
+        if temporal_mode not in {'raw', 'raw_bipolar'}:
+            raise ValueError(f'Unknown temporal mode: {temporal_mode}')
+        self.temporal_mode = temporal_mode
         self.temporal = TemporalEncoder_v2()
+        if temporal_mode == 'raw_bipolar':
+            self.bipolar_temporal = BipolarTemporalEncoder()
+            self.bipolar_fusion = nn.Linear(64, 32)
         self.spatial = mixers[spatial_mixing]()
 
     def forward(self, x):
-        return self.spatial(self.temporal(x))
+        raw_features = self.temporal(x)
+        if self.temporal_mode == 'raw':
+            return self.spatial(raw_features)
+        bipolar_features = self.bipolar_temporal(x)
+        fused = self.bipolar_fusion(torch.cat((raw_features, bipolar_features), dim=-1))
+        return self.spatial(fused)
 
 
 class SpikeMILModel_v2(nn.Module):
     """Masked-mean MIL with joint or factorized channel/depth outputs."""
 
-    def __init__(self, spatial_mixing='pairwise', num_bins=3, mode='joint'):
+    def __init__(self, spatial_mixing='pairwise', num_bins=3, mode='joint',
+                 temporal_mode='raw'):
         super().__init__()
         if mode not in {'joint', 'factorized_depth'}:
             raise ValueError(f'Unknown output mode: {mode}')
@@ -131,7 +190,9 @@ class SpikeMILModel_v2(nn.Module):
             raise ValueError('factorized_depth mode requires exactly three depth bins.')
         self.mode = mode
         self.num_bins = num_bins
-        self.encoder = SpikeEncoder_v2(spatial_mixing=spatial_mixing)
+        self.temporal_mode = temporal_mode
+        self.encoder = SpikeEncoder_v2(spatial_mixing=spatial_mixing,
+                           temporal_mode=temporal_mode)
         if mode == 'joint':
             self.head = nn.Sequential(nn.Linear(32, 32), nn.GELU(),
                                       nn.Dropout(0.2), nn.Linear(32, num_bins))
