@@ -283,7 +283,31 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
             panels.append((reference.reshape(count, -1), category_names, "Reference joint GT"))
         else:
             panels.append((reference, channels, "Reference channel GT"))
-    columns = len(panels)
+    if depth_predictions is not None:
+        bin_labels = depth_bin_names
+        bin_targets = depth_targets
+        bin_predictions = depth_predictions
+    elif bin_count > 1:
+        bin_labels = bins
+        bin_targets = targets.sum(axis=1)
+        bin_predictions = predictions.sum(axis=1)
+    else:
+        bin_labels = bin_targets = bin_predictions = None
+
+    bottom_column = 2
+    bin_summary_column = None
+    if bin_labels is not None:
+        bin_summary_column = bottom_column
+        bottom_column += 1
+    depth_agreement_column = None
+    if depth_predictions is not None:
+        depth_agreement_column = bottom_column
+        bottom_column += 1
+    reference_drift_column = None
+    if reference is not None:
+        reference_drift_column = bottom_column
+        bottom_column += 1
+    columns = max(len(panels), bottom_column)
     figure = plt.figure(figsize=(6.3 * columns, max(8, 3.8 + 0.57 * count)), layout="constrained")
     grid = figure.add_gridspec(2, columns, height_ratios=[1.15, 1])
     heatmap_axes = []
@@ -387,11 +411,32 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
     side_axis.set_xlabel("Target above; prediction below")
     side_axis.legend(handles=[Patch(color=color, label=name) for name, color, _ in categories],
                      ncol=len(categories), loc="upper center", bbox_to_anchor=(0.5, -0.18), frameon=False, fontsize=9)
+    if bin_summary_column is not None:
+        bin_axis = figure.add_subplot(grid[1, bin_summary_column])
+        bin_colors = ["#168b82", "#d2a84a", "#dc7452"]
+        for values, offset in [(bin_targets, -0.18), (bin_predictions, 0.18)]:
+            left_edge = np.zeros(count)
+            for bin_index, color in enumerate(bin_colors[:len(bin_labels)]):
+                mass = values[:, bin_index]
+                bin_axis.barh(positions + offset, mass, height=0.30,
+                              left=left_edge, color=color)
+                left_edge += mass
+        bin_axis.set_yticks(positions, patients)
+        bin_axis.invert_yaxis()
+        bin_axis.set_xlim(0, 1)
+        bin_axis.set_title("Per-bin mass", loc="left", weight="bold", pad=12)
+        bin_axis.set_xlabel("Target above; prediction below")
+        bin_axis.legend(
+            handles=[Patch(color=color, label=name)
+                     for color, name in zip(bin_colors, bin_labels)],
+            ncol=len(bin_labels), loc="upper center", bbox_to_anchor=(0.5, -0.18),
+            frameon=False, fontsize=9,
+        )
     depth_overlap = None
     if depth_predictions is not None:
         depth_overlap = np.minimum(depth_predictions, depth_targets).sum(axis=1)
         depth_matches = depth_predictions.argmax(axis=1) == depth_targets.argmax(axis=1)
-        depth_agreement = figure.add_subplot(grid[1, 2])
+        depth_agreement = figure.add_subplot(grid[1, depth_agreement_column])
         depth_agreement.barh(
             positions, depth_overlap,
             color=["#168b82" if match else "#ba6357" for match in depth_matches],
@@ -411,7 +456,7 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
             loc="upper center", bbox_to_anchor=(0.5, -0.18), frameon=False, fontsize=9,
         )
     if reference is not None:
-        drift_axis = figure.add_subplot(grid[1, columns - 1])
+        drift_axis = figure.add_subplot(grid[1, reference_drift_column])
         if reference.ndim == 3:
             drift = 0.5 * np.abs(targets - reference).sum(axis=(1, 2))
         else:
