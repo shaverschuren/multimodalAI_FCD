@@ -79,9 +79,11 @@ class BipolarTemporalEncoder(nn.Module):
             nn.GELU(),
             nn.Conv1d(8, 16, kernel_size=5, stride=2, padding=2),
             nn.GELU(),
+            nn.Conv1d(16, 16, kernel_size=5, stride=1, padding=2),
+            nn.GELU(),
         )
         self.pair_projection = nn.Linear(16, 32)
-        self.channel_projection = nn.Linear(64, 32)
+        self.channel_projection = nn.Linear(21 * 64, 32)
 
     def _encode_traces(self, traces):
         features = self.temporal(traces)
@@ -108,10 +110,10 @@ class BipolarTemporalEncoder(nn.Module):
 
         pair_features = torch.cat(pair_chunks, dim=1).reshape(
             batch, channels, channels, 32)
-        diagonal = pair_features.diagonal(dim1=1, dim2=2).transpose(1, 2)
-        row = (pair_features.sum(dim=2) - diagonal) / (channels - 1)
-        column = (pair_features.sum(dim=1) - diagonal) / (channels - 1)
-        return self.channel_projection(torch.cat((row, column), dim=-1))
+        pairs = torch.cat((pair_features, pair_features.transpose(1, 2)), dim=-1)
+        diagonal = torch.eye(channels, dtype=torch.bool, device=x.device)
+        pairs = pairs.masked_fill(diagonal[None, :, :, None], 0.0)
+        return self.channel_projection(pairs.flatten(2))
 
 
 class PairwiseSpatialMixer(nn.Module):
