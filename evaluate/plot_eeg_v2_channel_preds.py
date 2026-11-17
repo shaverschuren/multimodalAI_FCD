@@ -42,7 +42,7 @@ def validate_distribution(values, name, patients):
         raise ValueError(f"{name} must be finite, nonnegative distributions summing to one: {invalid_patients}")
 
 
-def load_predictions(csv_path, gt_path=None):
+def load_predictions(csv_path, gt_path=None, depth_gt_path=None):
     if csv_path.is_dir():
         csv_paths = sorted(set(csv_path.rglob("test_predictions.csv"))
                            | set(csv_path.rglob("test_prediction.csv")))
@@ -73,14 +73,21 @@ def load_predictions(csv_path, gt_path=None):
         raise ValueError("CSV must contain pred_<channel> and target_<channel> columns.")
     predictions_by_label = {}
     targets_by_label = {}
+    depth_predictions_by_bin = {}
+    depth_targets_by_bin = {}
     channel_names = {}
     bin_names = []
-    for prefix, columns, destination in (
-        ("pred_", prediction_columns, predictions_by_label),
-        ("target_", target_columns, targets_by_label),
+    for prefix, columns, destination, depth_destination in (
+        ("pred_", prediction_columns, predictions_by_label, depth_predictions_by_bin),
+        ("target_", target_columns, targets_by_label, depth_targets_by_bin),
     ):
         for column in columns:
             channel, bin_name = split_label(column[len(prefix):])
+            if channel.casefold() == "depth":
+                if not bin_name or bin_name in depth_destination:
+                    raise ValueError(f"Duplicate or invalid global-depth column {column!r}.")
+                depth_destination[bin_name] = column
+                continue
             label = (channel.casefold(), bin_name)
             if not channel or label in destination:
                 raise ValueError(f"Duplicate or invalid output column {column!r}.")
@@ -88,9 +95,24 @@ def load_predictions(csv_path, gt_path=None):
             channel_names.setdefault(channel.casefold(), channel)
             if bin_name and bin_name not in bin_names:
                 bin_names.append(bin_name)
-    if predictions_by_label.keys() != targets_by_label.keys():
+    has_depth = bool(depth_predictions_by_bin)
+    if (predictions_by_label.keys() != targets_by_label.keys()
+            or depth_predictions_by_bin.keys() != depth_targets_by_bin.keys()
+            or has_depth != bool(depth_targets_by_bin)):
         raise ValueError("Prediction and target channel/bin columns must match.")
-    if bin_names:
+    if has_depth:
+        if bin_names:
+            raise ValueError("Factorized global-depth columns cannot be mixed with joint channel/bin columns.")
+        depth_bins = next((group for group in BIN_GROUPS
+                           if set(depth_predictions_by_bin) == set(group)), None)
+        if depth_bins is None or len(depth_predictions_by_bin) != 3:
+            raise ValueError(f"Expected a recognized three-bin global-depth scheme, got {list(depth_predictions_by_bin)}.")
+        bins = [""]
+        channels = list(channel_names.values())
+        labels = [(channel.casefold(), "") for channel in channels]
+        if predictions_by_label.keys() != set(labels):
+            raise ValueError("Factorized channel columns must contain one scalar per electrode.")
+    elif bin_names:
         expected_bins = next((group for group in BIN_GROUPS if set(bin_names) == set(group)), None)
         if expected_bins is None or len(bin_names) != 3:
             raise ValueError(f"Expected one recognized three-bin scheme, got {bin_names}.")
@@ -113,9 +135,15 @@ def load_predictions(csv_path, gt_path=None):
             raise ValueError(f"Empty patient_id in {source_path}.")
         prediction_values = [row.get(predictions_by_label[label], "").strip()
                              for label in labels]
+        if has_depth:
+            prediction_values.extend(row.get(depth_predictions_by_bin[name], "").strip()
+                                     for name in depth_bins)
         if any(not value for value in prediction_values):
             raise ValueError(f"Blank prediction value for {patient} in {source_path}.")
         target_values = [row.get(targets_by_label[label], "").strip() for label in labels]
+        if has_depth:
+            target_values.extend(row.get(depth_targets_by_bin[name], "").strip()
+                                 for name in depth_bins)
         if all(not value for value in target_values):
             unlabelled_count += 1
             continue
@@ -142,6 +170,36 @@ def load_predictions(csv_path, gt_path=None):
                         for row in rows]).reshape(len(rows), len(channels), len(bins))
     validate_distribution(predictions, "Predictions", patients)
     validate_distribution(targets, "Targets", patients)
+    depth_predictions = depth_targets = depth_reference = None
+    depth_bin_names = None
+    if has_depth:
+        depth_bin_names = list(depth_bins)
+        depth_predictions = np.array([
+            [float(row[depth_predictions_by_bin[name]]) for name in depth_bin_names]
+            for row in rows
+        ])
+        depth_targets = np.array([
+            [float(row[depth_targets_by_bin[name]]) for name in depth_bin_names]
+            for row in rows
+        ])
+        validate_distribution(depth_predictions, "Global-depth predictions", patients)
+        validate_distribution(depth_targets, "Global-depth targets", patients)
+        if depth_gt_path is not None:
+            with depth_gt_path.open(encoding="utf-8") as handle:
+                raw_depth = json.load(handle)
+            reference_rows = []
+            depth_name_lookup = {name.casefold(): name for name in depth_bin_names}
+            for patient in patients:
+                if patient not in raw_depth or not isinstance(raw_depth[patient], dict):
+                    raise ValueError(f"Global-depth reference GT lacks a distribution for {patient}.")
+                entry = {name.casefold(): value for name, value in raw_depth[patient].items()}
+                if set(entry) != set(depth_name_lookup):
+                    raise ValueError(f"Global-depth reference bins differ for {patient}.")
+                reference_rows.append([float(entry[name.casefold()]) for name in depth_bin_names])
+            depth_reference = np.asarray(reference_rows, dtype=np.float64)
+            validate_distribution(depth_reference, "Global-depth reference GT", patients)
+    elif depth_gt_path is not None:
+        raise ValueError("--depth-gt-json requires factorized global-depth CSV columns.")
     reference = None
     if gt_path is not None:
         with gt_path.open(encoding="utf-8") as handle:
@@ -182,10 +240,13 @@ def load_predictions(csv_path, gt_path=None):
                 ])
         reference = np.array(reference_rows)
         validate_distribution(reference, "Reference GT", patients)
-    return patients, channels, bins, predictions, targets, reference
+    return (patients, channels, bins, predictions, targets, reference,
+            depth_bin_names, depth_predictions, depth_targets, depth_reference)
 
 
-def plot_page(patients, channels, bins, predictions, targets, reference, title, output, dpi):
+def plot_page(patients, channels, bins, predictions, targets, reference, title, output, dpi,
+              depth_bin_names=None, depth_predictions=None, depth_targets=None,
+              depth_reference=None):
     count = len(patients)
     positions = np.arange(count)
     channel_predictions = predictions.sum(axis=2)
@@ -204,30 +265,58 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
         bin_name = bins[index % bin_count]
         return f"{channel}/{bin_name}" if bin_name else channel
 
-    columns = 3 if reference is not None else 2
-    figure = plt.figure(figsize=(6.3 * columns, max(8, 3.8 + 0.57 * count)), layout="constrained")
-    grid = figure.add_gridspec(2, columns, height_ratios=[1.15, 1])
-    heatmap_axes = []
     panels = [(targets.reshape(count, -1), category_names, "CSV target"),
               (predictions.reshape(count, -1), category_names, "Prediction")]
+    depth_rows_per_patient = 0
+    if depth_predictions is not None:
+        depth_values = [depth_targets, depth_predictions]
+        depth_row_names = ["target", "prediction"]
+        if depth_reference is not None:
+            depth_values.append(depth_reference)
+            depth_row_names.append("reference")
+        depth_rows_per_patient = len(depth_values)
+        depth_matrix = np.stack(depth_values, axis=1).reshape(
+            count * depth_rows_per_patient, len(depth_bin_names))
+        panels.append((depth_matrix, depth_bin_names, "Global depth distributions"))
     if reference is not None:
         if reference.ndim == 3:
             panels.append((reference.reshape(count, -1), category_names, "Reference joint GT"))
         else:
             panels.append((reference, channels, "Reference channel GT"))
+    columns = len(panels)
+    figure = plt.figure(figsize=(6.3 * columns, max(8, 3.8 + 0.57 * count)), layout="constrained")
+    grid = figure.add_gridspec(2, columns, height_ratios=[1.15, 1])
+    heatmap_axes = []
     joint_vmax = max(float(targets.max()), float(predictions.max()), 1e-8)
-    joint_image = reference_image = None
+    joint_image = reference_image = depth_image = None
+    reference_axis = None
+    depth_axis = None
     for column, (values, labels, heading) in enumerate(panels):
         axis = figure.add_subplot(grid[0, column])
         heatmap_axes.append(axis)
         is_reference = heading.startswith("Reference")
-        vmax = max(float(values.max()), 1e-8) if is_reference else joint_vmax
+        is_depth_panel = heading == "Global depth distributions"
+        vmax = max(float(values.max()), 1e-8) if is_reference or is_depth_panel else joint_vmax
         image = axis.imshow(values, vmin=0, vmax=vmax, cmap="YlGnBu", aspect="auto")
         if is_reference:
             reference_image = image
+            reference_axis = axis
+        elif is_depth_panel:
+            depth_image = image
+            depth_axis = axis
         else:
             joint_image = image
-        if bin_count > 1 and not is_reference:
+        if is_depth_panel:
+            axis.set_xticks(np.arange(len(labels)), labels, rotation=45, ha="right")
+            axis.set_yticks(
+                np.arange(count) * depth_rows_per_patient + (depth_rows_per_patient - 1) / 2,
+                patients,
+            )
+            axis.set_yticks(
+                np.arange(1, count) * depth_rows_per_patient - 0.5, minor=True)
+            axis.grid(which="minor", axis="y", color="white", linewidth=1)
+            axis.set_ylabel("Rows per patient: " + ", ".join(depth_row_names))
+        elif bin_count > 1 and not is_reference:
             axis.set_xticks(np.arange(len(labels)),
                             [name[0].upper() for _ in channels for name in bins],
                             fontsize=7)
@@ -238,9 +327,10 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
             axis.set_xlabel("Electrode (top) / bin (bottom)")
         else:
             axis.set_xticks(np.arange(len(labels)), labels, rotation=90)
-        axis.set_yticks(positions, patients)
-        axis.set_yticks(np.arange(count + 1) - 0.5, minor=True)
-        axis.grid(which="minor", axis="y", color="white", linewidth=1)
+        if not is_depth_panel:
+            axis.set_yticks(positions, patients)
+            axis.set_yticks(np.arange(count + 1) - 0.5, minor=True)
+            axis.grid(which="minor", axis="y", color="white", linewidth=1)
         axis.tick_params(which="minor", left=False)
         axis.set_title(heading, loc="left", weight="bold",
                    pad=32 if bin_count > 1 and not is_reference else 12)
@@ -251,8 +341,11 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
                       color="white" if values_row[channel_index] > 0.55 else "black")
     figure.colorbar(joint_image, ax=heatmap_axes[:2],
                     label="Joint probability mass", shrink=0.65, pad=0.02)
+    if depth_image is not None:
+        figure.colorbar(depth_image, ax=depth_axis,
+                        label="Global-depth probability", shrink=0.65, pad=0.02)
     if reference_image is not None:
-        figure.colorbar(reference_image, ax=heatmap_axes[2],
+        figure.colorbar(reference_image, ax=reference_axis,
                         label="Channel marginal", shrink=0.65, pad=0.02)
     agreement = figure.add_subplot(grid[1, 0])
     matches = predicted_top == target_top
@@ -294,8 +387,31 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
     side_axis.set_xlabel("Target above; prediction below")
     side_axis.legend(handles=[Patch(color=color, label=name) for name, color, _ in categories],
                      ncol=len(categories), loc="upper center", bbox_to_anchor=(0.5, -0.18), frameon=False, fontsize=9)
+    depth_overlap = None
+    if depth_predictions is not None:
+        depth_overlap = np.minimum(depth_predictions, depth_targets).sum(axis=1)
+        depth_matches = depth_predictions.argmax(axis=1) == depth_targets.argmax(axis=1)
+        depth_agreement = figure.add_subplot(grid[1, 2])
+        depth_agreement.barh(
+            positions, depth_overlap,
+            color=["#168b82" if match else "#ba6357" for match in depth_matches],
+        )
+        for index, value in enumerate(depth_overlap):
+            depth_agreement.text(value + 0.015, index, f"{value:.2f}",
+                                 va="center", fontsize=9)
+        depth_agreement.set_yticks(positions, patients)
+        depth_agreement.invert_yaxis()
+        depth_agreement.set_xlim(0, 1.12)
+        depth_agreement.set_xticks([0, 0.25, 0.5, 0.75, 1])
+        depth_agreement.set_title("Global-depth overlap", loc="left", weight="bold", pad=12)
+        depth_agreement.set_xlabel("Higher is better")
+        depth_agreement.legend(
+            handles=[Patch(color="#168b82", label="Top depth bin matches"),
+                     Patch(color="#ba6357", label="Top depth bin differs")],
+            loc="upper center", bbox_to_anchor=(0.5, -0.18), frameon=False, fontsize=9,
+        )
     if reference is not None:
-        drift_axis = figure.add_subplot(grid[1, 2])
+        drift_axis = figure.add_subplot(grid[1, columns - 1])
         if reference.ndim == 3:
             drift = 0.5 * np.abs(targets - reference).sum(axis=(1, 2))
         else:
@@ -312,8 +428,9 @@ def plot_page(patients, channels, bins, predictions, targets, reference, title, 
                      loc="left", weight="bold", pad=12)
         drift_axis.set_xlabel("Total variation: 0 = identical; 1 = disjoint")
     agreement_name = "top channel/bin" if bin_count > 1 else "top-channel"
+    depth_summary = f" | mean depth overlap {depth_overlap.mean():.2f}" if depth_overlap is not None else ""
     figure.suptitle(f"{title}\n{count} patients | {agreement_name} matches {matches.sum()}/{count}"
-                   f" | mean overlap {overlap.mean():.2f}", fontsize=15, weight="bold")
+                   f" | mean overlap {overlap.mean():.2f}{depth_summary}", fontsize=15, weight="bold")
     figure.savefig(output, dpi=dpi, facecolor="white")
     plt.close(figure)
 
@@ -323,6 +440,8 @@ def main():
     parser.add_argument("--csv-path", type=Path,
                         help="Prediction CSV or folder of fold runs containing test_predictions.csv.")
     parser.add_argument("--gt-json", type=Path, help="Optional patient-to-channel GT JSON for target auditing.")
+    parser.add_argument("--depth-gt-json", type=Path,
+                        help="Optional patient-to-global-depth GT JSON for factorized target auditing.")
     parser.add_argument("--output", type=Path, help="Output PNG path; defaults to data/tmp/<CSV stem>_diagnostic.png.")
     parser.add_argument("--sort", choices=["worst", "patient", "input"], default="worst")
     parser.add_argument("--patients-per-page", type=int, default=16)
@@ -331,9 +450,10 @@ def main():
     if args.patients_per_page < 1 or args.dpi < 1:
         parser.error("--patients-per-page and --dpi must be positive.")
     try:
-        patients, channels, bins, predictions, targets, reference = load_predictions(
-            args.csv_path, args.gt_json
-        )
+        (patients, channels, bins, predictions, targets, reference,
+         depth_bin_names, depth_predictions, depth_targets,
+         depth_reference) = load_predictions(args.csv_path, args.gt_json,
+                                             args.depth_gt_json)
     except (ValueError, KeyError, OSError) as exc:
         parser.error(str(exc))
     overlap = np.minimum(predictions, targets).sum(axis=(1, 2))
@@ -353,6 +473,10 @@ def main():
                 predictions[selected], targets[selected],
                 reference[selected] if reference is not None else None,
                 title, page_output, args.dpi,
+                depth_bin_names,
+                depth_predictions[selected] if depth_predictions is not None else None,
+                depth_targets[selected] if depth_targets is not None else None,
+                depth_reference[selected] if depth_reference is not None else None,
             )
             print(f"Saved: {page_output}")
         matches = (predictions.reshape(len(patients), -1).argmax(axis=1)
@@ -360,6 +484,14 @@ def main():
         category = "channel/bin" if len(bins) > 1 else "channel"
         print(f"All {len(patients)} patients: top-{category} matches {matches}/{len(patients)}, "
             f"mean overlap {overlap.mean():.3f}")
+        if depth_predictions is not None:
+            depth_overlap = np.minimum(depth_predictions, depth_targets).sum(axis=1)
+            print(f"Global depth: mean overlap {depth_overlap.mean():.3f}, "
+                  f"top-bin matches "
+                  f"{(depth_predictions.argmax(axis=1) == depth_targets.argmax(axis=1)).sum()}/{len(patients)}")
+            if depth_reference is not None:
+                drift = 0.5 * np.abs(depth_targets - depth_reference).sum(axis=1)
+                print(f"Global-depth CSV target vs reference GT: mean total variation {drift.mean():.3f}")
 
 
 if __name__ == "__main__":

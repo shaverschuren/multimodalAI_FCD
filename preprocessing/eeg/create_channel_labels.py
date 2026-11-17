@@ -111,6 +111,20 @@ def compute_patient_labels(ground_truth_path, map_paths, channels, reference,
     return channel_labels, depth_labels, depth_marginal
 
 
+def compute_global_depth_target(ground_truth_path, reference, brain_mask, depth_bins):
+    mask = resample_mask_to_reference(ground_truth_path, reference) > 0.5
+    mask &= brain_mask
+    if not mask.any():
+        return {}
+    weights = depth_bins[:, mask].mean(axis=1, dtype=np.float64)
+    total = weights.sum(dtype=np.float64)
+    if not np.isfinite(weights).all() or total <= 0:
+        raise ValueError("Global depth-bin target is empty or non-finite.")
+    weights /= total
+    weights[-1] = 1.0 - weights[:-1].sum(dtype=np.float64)
+    return {name: float(value) for name, value in zip(DEPTH_BIN_NAMES, weights)}
+
+
 def compute_distance_targets(patient_masks, channel_labels, map_paths, channels,
                              electrode_coords, reference, brain_mask,
                              threshold=CHANNEL_THRESHOLD):
@@ -260,7 +274,8 @@ def save_electrode_distance_qc(map_paths, electrode_coords, brain_mask,
 
 
 def main(patients_dir, sensitivity_map_dir, output_dir, channel_output_file=None,
-         depth_output_file=None, template_path=None, distance_output_file=None):
+         depth_output_file=None, template_path=None, distance_output_file=None,
+         global_depth_output_file=None):
     patients_dir = Path(patients_dir)
     sensitivity_map_dir = Path(sensitivity_map_dir)
     output_dir = Path(output_dir)
@@ -269,6 +284,7 @@ def main(patients_dir, sensitivity_map_dir, output_dir, channel_output_file=None
     depth_output_file = Path(depth_output_file or gt_dir / "gt_channel_depth.json")
     template_path = Path(template_path or Path(__file__).with_name("MNI152_T1_1mm_brain.nii.gz"))
     distance_output_file = Path(distance_output_file or gt_dir / "gt_channel_distance.json")
+    global_depth_output_file = Path(global_depth_output_file or gt_dir / "gt_depth.json")
 
     map_paths = resolve_sensitivity_maps(sensitivity_map_dir, CHANNELS)
     reference = nib.load(str(map_paths[CHANNELS[0]]))
@@ -292,6 +308,7 @@ def main(patients_dir, sensitivity_map_dir, output_dir, channel_output_file=None
 
     labels = {}
     depth_labels = {}
+    global_depth_labels = {}
     patient_masks = {}
     output_dir.mkdir(parents=True, exist_ok=True)
     for patient_folder in tqdm(list(patients_dir.iterdir()), desc="Processing patients"):
@@ -308,6 +325,9 @@ def main(patients_dir, sensitivity_map_dir, output_dir, channel_output_file=None
             )
             labels[patient_id] = channel_target
             depth_labels[patient_id] = depth_target
+            global_depth_labels[patient_id] = compute_global_depth_target(
+                ground_truth_path, reference, brain_mask, depth_bins
+            )
             patient_masks[patient_id] = ground_truth_path
             per_patient_path = output_dir / f"{patient_id}_channel_labels.json"
             with per_patient_path.open("w", encoding="utf-8") as handle:
@@ -360,10 +380,13 @@ def main(patients_dir, sensitivity_map_dir, output_dir, channel_output_file=None
         json.dump(depth_labels, handle, indent=2)
     with distance_output_file.open("w", encoding="utf-8") as handle:
         json.dump(distance_labels, handle, indent=2)
+    with global_depth_output_file.open("w", encoding="utf-8") as handle:
+        json.dump(global_depth_labels, handle, indent=2)
     shutil.copyfile(channel_output_file, output_dir / "gt_channels.json")
     tqdm.write(f"Saved channel labels: {channel_output_file}")
     tqdm.write(f"Saved joint channel-depth labels: {depth_output_file}")
     tqdm.write(f"Saved joint channel-distance labels: {distance_output_file}")
+    tqdm.write(f"Saved independent global depth labels: {global_depth_output_file}")
     return labels
 
 if __name__ == "__main__":
@@ -375,4 +398,5 @@ if __name__ == "__main__":
         data_dir / "preprocessing" / "gt" / "gt_channels.json",
         data_dir / "preprocessing" / "gt" / "gt_channel_depth.json",
         distance_output_file=data_dir / "preprocessing" / "gt" / "gt_channel_distance.json",
+        global_depth_output_file=data_dir / "preprocessing" / "gt" / "gt_depth.json",
     )

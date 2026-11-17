@@ -131,6 +131,96 @@ def reconstruct_oracle(target, map_paths, reference, bins, normalizers,
     return volume / volume.sum(dtype=np.float64)
 
 
+def reconstruct_factorized(channel_target, depth_target, map_paths, reference,
+                            depth_bins, brain_mask):
+    channel_target = np.asarray(channel_target, dtype=np.float64)
+    depth_target = np.asarray(depth_target, dtype=np.float64)
+    if channel_target.shape != (len(CHANNELS),):
+        raise ValueError(f"Expected {len(CHANNELS)} channel weights.")
+    if depth_target.shape != (len(DEPTH_BIN_NAMES),):
+        raise ValueError(f"Expected {len(DEPTH_BIN_NAMES)} global-depth weights.")
+    for name, target in (("channel", channel_target), ("depth", depth_target)):
+        if (not np.isfinite(target).all() or np.any(target < 0)
+                or not np.isclose(target.sum(), 1.0, atol=1e-5)):
+            raise ValueError(f"Invalid factorized {name} probability distribution.")
+
+    channel_mixture = np.zeros(reference.shape[:3], dtype=np.float64)
+    for channel_index, channel in enumerate(CHANNELS):
+        weight = channel_target[channel_index]
+        if weight <= 0:
+            continue
+        image = nib.load(str(map_paths[channel]))
+        assert_same_grid(image, reference, f"Sensitivity map for {channel}")
+        sensitivity = image.get_fdata(dtype=np.float32).astype(np.float64)
+        if not np.isfinite(sensitivity).all() or np.any(sensitivity < 0):
+            raise ValueError(f"Invalid sensitivity values for {channel}.")
+        sensitivity[~brain_mask] = 0.0
+        total = sensitivity.sum(dtype=np.float64)
+        if total <= 0:
+            raise ValueError(f"Sensitivity map for {channel} is empty in brain mask.")
+        channel_mixture += weight * sensitivity / total
+
+    volume = np.zeros(reference.shape[:3], dtype=np.float64)
+    for depth_index, weight in enumerate(depth_target):
+        if weight <= 0:
+            continue
+        component = channel_mixture * depth_bins[depth_index]
+        total = component.sum(dtype=np.float64)
+        if total <= 0:
+            raise ValueError(f"Global depth component {DEPTH_BIN_NAMES[depth_index]} is empty.")
+        volume += weight * component / total
+    volume[~brain_mask] = 0.0
+    total = volume.sum(dtype=np.float64)
+    if not np.isfinite(volume).all() or total <= 0:
+        raise ValueError("Factorized reconstruction is empty or non-finite.")
+    return (volume / total).astype(np.float32)
+
+
+def load_factorized_targets(channel_path, depth_path):
+    channel_raw = json.loads(Path(channel_path).read_text(encoding="utf-8"))
+    depth_raw = json.loads(Path(depth_path).read_text(encoding="utf-8"))
+    channel_names = {name.casefold(): index for index, name in enumerate(CHANNELS)}
+    depth_names = {name.casefold(): index for index, name in enumerate(DEPTH_BIN_NAMES)}
+    targets = {}
+    for patient in sorted(set(channel_raw) & set(depth_raw)):
+        channel = np.zeros(len(CHANNELS), dtype=np.float32)
+        for raw_name, value in channel_raw[patient].items():
+            key = raw_name.casefold()
+            if key not in channel_names:
+                raise ValueError(f"Unknown channel {raw_name!r} for {patient}.")
+            channel[channel_names[key]] += float(value)
+        depth = np.zeros(len(DEPTH_BIN_NAMES), dtype=np.float32)
+        for raw_name, value in depth_raw[patient].items():
+            key = raw_name.casefold()
+            if key not in depth_names:
+                raise ValueError(f"Unknown depth bin {raw_name!r} for {patient}.")
+            depth[depth_names[key]] += float(value)
+        targets[patient] = (channel, depth)
+    if not targets:
+        raise ValueError("No patients have both channel and global-depth targets.")
+    return targets
+
+
+def reconstruct_factorized_oracle(channel_path, depth_path, sensitivity_dir,
+                                  output_dir):
+    targets = load_factorized_targets(channel_path, depth_path)
+    map_paths = resolve_sensitivity_maps(sensitivity_dir, CHANNELS)
+    reference = nib.load(str(map_paths[CHANNELS[0]]))
+    template_path = PROJECT_DIR / "preprocessing" / "eeg" / "MNI152_T1_1mm_brain.nii.gz"
+    template, brain_mask = load_brain_template(template_path)
+    assert_same_grid(reference, template, "Sensitivity-map reference")
+    _, depth_bins = compute_depth_map_and_bins(brain_mask, template.affine)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for patient, (channel, depth) in targets.items():
+        volume = reconstruct_factorized(channel, depth, map_paths, reference,
+                                        depth_bins, brain_mask)
+        nii = nib.Nifti1Image(volume, reference.affine, template.header.copy())
+        nii.set_data_dtype(np.float32)
+        nib.save(nii, output_dir / f"{patient}_eeg_v2_factorized_depth_oracle.nii.gz")
+    print(f"Reconstructed {len(targets)} factorized-depth oracles in {output_dir}")
+
+
 def reconstruct_channel_only(target, map_paths, reference, brain_mask):
     volume = np.zeros(reference.shape[:3], dtype=np.float32)
     for channel_index, channel in enumerate(CHANNELS):
@@ -291,8 +381,22 @@ def reconstruct(targets_path, sensitivity_dir, output_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("targets_json", type=Path, help="gt_channel_depth.json")
+    parser.add_argument("targets_json", type=Path,
+                        help="Joint targets JSON, or channel targets in factorized mode")
     parser.add_argument("sensitivity_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
+    parser.add_argument("--mode", choices=["joint", "factorized_depth"],
+                        default="joint")
+    parser.add_argument("--channel_targets", type=Path,
+                        help="gt_channels.json for factorized_depth mode")
+    parser.add_argument("--depth_targets", type=Path,
+                        help="gt_depth.json for factorized_depth mode")
     args = parser.parse_args()
-    reconstruct(args.targets_json, args.sensitivity_dir, args.output_dir)
+    if args.mode == "joint":
+        reconstruct(args.targets_json, args.sensitivity_dir, args.output_dir)
+    else:
+        channel_path = args.channel_targets or args.targets_json
+        if args.depth_targets is None:
+            parser.error("factorized_depth requires --depth_targets")
+        reconstruct_factorized_oracle(channel_path, args.depth_targets,
+                                      args.sensitivity_dir, args.output_dir)

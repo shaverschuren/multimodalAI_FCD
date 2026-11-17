@@ -121,14 +121,28 @@ class SpikeEncoder_v2(nn.Module):
 
 
 class SpikeMILModel_v2(nn.Module):
-    """Masked-mean MIL with a shared 3-bin head per electrode."""
+    """Masked-mean MIL with joint or factorized channel/depth outputs."""
 
-    def __init__(self, spatial_mixing='pairwise', num_bins=3):
+    def __init__(self, spatial_mixing='pairwise', num_bins=3, mode='joint'):
         super().__init__()
+        if mode not in {'joint', 'factorized_depth'}:
+            raise ValueError(f'Unknown output mode: {mode}')
+        if mode == 'factorized_depth' and num_bins != 3:
+            raise ValueError('factorized_depth mode requires exactly three depth bins.')
+        self.mode = mode
         self.num_bins = num_bins
         self.encoder = SpikeEncoder_v2(spatial_mixing=spatial_mixing)
-        self.head = nn.Sequential(nn.Linear(32, 32), nn.GELU(),
-                                  nn.Dropout(0.2), nn.Linear(32, num_bins))
+        if mode == 'joint':
+            self.head = nn.Sequential(nn.Linear(32, 32), nn.GELU(),
+                                      nn.Dropout(0.2), nn.Linear(32, num_bins))
+        else:
+            self.channel_head = nn.Sequential(
+                nn.Linear(32, 32), nn.GELU(), nn.Dropout(0.2), nn.Linear(32, 1)
+            )
+            self.depth_head = nn.Sequential(
+                nn.Linear(21 * 32, 64), nn.GELU(), nn.Dropout(0.2),
+                nn.Linear(64, 3),
+            )
 
     def forward(self, x, mask=None):
         batch, spikes, channels, samples = x.shape
@@ -139,5 +153,10 @@ class SpikeMILModel_v2(nn.Module):
         else:
             valid = mask[:, :, None, None].to(h.dtype)
             h = (h * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
-        logits = self.head(h)  # (B, 21, 3)
-        return logits.flatten(1).softmax(dim=1).reshape_as(logits)
+        if self.mode == 'joint':
+            logits = self.head(h)  # (B, 21, num_bins)
+            return logits.flatten(1).softmax(dim=1).reshape_as(logits)
+
+        channel_logits = self.channel_head(h).squeeze(-1)
+        depth_logits = self.depth_head(h.flatten(1))
+        return channel_logits.softmax(dim=1), depth_logits.softmax(dim=1)
